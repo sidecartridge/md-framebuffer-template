@@ -145,7 +145,7 @@ void term_cmdGet(const char *arg);
 void term_cmdPutInt(const char *arg);
 void term_cmdPutBool(const char *arg);
 void term_cmdPutString(const char *arg);
-void term_printNetworkInfo(void);
+void term_printDeviceStatus(void);
 void term_markMenuPromptCursor(void);
 void term_refreshMenuLiveInfo(void);
 

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-See also: `programming.md` (full shared-region table and budget rules), `README.md` (high-level region/userfw overview), `AGENTS.md` (overlapping playbook + troubleshooting table).
+See also: `programming.md` (full shared-region table and budget rules), `README.md` (high-level region/userfw overview), `AGENTS.md` (overlapping playbook + troubleshooting table), `CHANGELOG.md` (fastest way to spot breaking changes between template versions — e.g. v1.1.0's `init_romemul` signature change, v1.2.0's region rearrangement, v1.2.1's seed-must-advance invariant).
 
 ## What this repo is
 
@@ -32,7 +32,6 @@ Build flow (orchestrated by `build.sh`):
 
 ### Build gotchas
 - **CMake always builds with `-DCMAKE_BUILD_TYPE=MinSizeRel`** regardless of the `<build_type>` argument. A full `Release` previously caused breakage (memory/over-optimization). The legacy line is left commented in `rp/build.sh`. `<build_type>` only controls the `DEBUG_MODE` macro and the dist filename.
-- `CHARACTER_GAP_MS` must remain defined (700) in `rp/src/include/blink.h` — removing it breaks the RP build.
 - Harmless VASM warnings during the m68k build (`target data type overflow`, `trailing garbage after option -D`) can be ignored.
 - VASM/`stcmd` errors like `the input device is not a TTY` mean `stcmd` was invoked without a PTY. `target/atarist/build.sh` already exports `STCMD_NO_TTY=1` for every `stcmd` call it makes; you only need to export it yourself if invoking `stcmd` directly from a non-TTY context (CI, sub-shells, build wrappers). Without it the m68k build can fail silently and the previous `BOOT.BIN` survives — leading to a working RP firmware that displays garbage on the ST because `target_firmware.h` is stale.
 
@@ -51,6 +50,7 @@ The firmware is a **two-target build**: m68k assembly that runs on the Atari ST 
 
 ### Atari ST side (`target/atarist/`)
 - `src/main.s` — m68k cartridge boot + dispatch + terminal. Lives at `$FA0000` in the ST address space (ROM4 cartridge region). Defines the cartridge header (`CA_MAGIC`, `CA_INIT`, …), command magic numbers, and the shared-variable layout used to talk to the RP2040.
+- **No Atari RAM**: the cartridge code deliberately uses none of the ST's RAM (no `.bss`, no heap). Data lives in the shared region or is pushed to the RP. Adding naive BSS to `userfw.s` will silently corrupt system variables — keep state in `APP_FREE` / `SHARED_VARIABLES`, or copy code into RAM and set up BSS/heap manually before executing (the "games-in-ROM" pattern).
 - `src/userfw.s` — **the primary extension point for app-specific m68k code.** `src/userfw.ld` places `main.s` at offset `0x0000` (2 KB budget) and `userfw.s` at offset `0x0800` (6 KB budget); `main.s` exposes the latter as `USERFW equ (ROM4_ADDR + $800)`. When the RP-side terminal command `f` ([F]irmware) is selected, the RP writes `CMD_START = 4` to the cartridge sentinel; the m68k's vsync-polled `check_commands` dispatches to `rom_function`, which `jmp`s to `USERFW`. The default `userfw.s` is a Cconws demo — replace its body with your own logic.
 - Adding more m68k modules: add a new `.text_<name>` section in `userfw.ld`, mirror the offset with an `equ (ROM4_ADDR + $????)` in `main.s`, and add the `.o` target to `target/atarist/Makefile` (same pattern as `gemdrive.ld` in `md-drives-emulator`).
 - Built via `stcmd make release` (m68k assembler in Docker); the cartridge image (header + all `.text_*` sections) must fit in 8 KB. A 64 KB padded copy is then converted to `target_firmware.h` for inclusion in the RP build.
@@ -63,6 +63,7 @@ The Atari ST sees a 64 KB window at `$FA0000`–`$FAFFFF` (mirrored RP-side at `
 | `$FA0000` | cartridge image | 8 KB | m68k header + all `.text_*` sections (hard limit) |
 | `$FA2000` | `CMD_MAGIC_SENTINEL` | 4 B | m68k polls here for NOP/RESET/command words |
 | `$FA2004` | `RANDOM_TOKEN`, `RANDOM_TOKEN_SEED`, 60 × 4 B indexed shared variables | ~768 B | fixed-offset metadata block (first 512 B until `$FA2300`) |
+| `$FA2100` | `TRANSTABLE` | 512 B | high-res mask table written by `display_setupU8g2()`; apps using the high-res render path must skip past it, apps that don't use that path can reclaim these bytes |
 | `$FA2300` | `APP_FREE` | ~48 KB | contiguous arena for app buffers |
 | `$FAE0C0` | `FRAMEBUFFER` | 8000 B | 320×200 monochrome framebuffer; sits at the top of the region so an overrun walks off the end of the 64 KB window instead of corrupting the metadata block |
 
@@ -72,11 +73,11 @@ See `programming.md` for the full table and budget rules.
 - `main.c` — only sets clock/voltage, calls `gconfig_init` (global config) then `aconfig_init` (per-app config), and hands off to `emul_start()`. If config init fails it jumps to the **Booster** app via `reset_jump_to_booster()` to bootstrap. **Don't add features to `main.c`** — put them in `emul.c` or a new module.
 - `emul.c` / `emul.h` — the application's main loop and entry point. This is where to add new features.
 - `romemul.c` / `romemul.pio` — PIO programs and the runtime that emulates the cartridge ROM/RAM bus to the Atari (driven by `READ_*` / `WRITE_*` GPIOs defined in `include/constants.h`).
-- `gconfig.c` / `aconfig.c` — global vs per-app configuration stored in dedicated flash sectors, on top of `settings/` (a key-value store).
-- `network.c`, `httpc/`, `download.c` — Wi-Fi (CYW43, lwIP poll mode), HTTPS-capable HTTP client, firmware download support.
+- `commemul.c` / `commemul.pio`, `chandler.c` — **polled command channel; the primary extension point for adding new commands.** `commemul` is a PIO+DMA ring that captures every ROM3 access into a 32 KB ring buffer with no IRQs; `chandler_loop()` drains the ring, parses each command via `tprotocol_parse`, and dispatches to callbacks registered with `chandler_addCB(cb)`. Callback signature: `void cb(TransmissionProtocol *protocol, uint16_t *payloadPtr)` — `payloadPtr` is past the random-token prefix; read parameters with the `TPROTO_GET_*` macros. After dispatch, `chandler` writes the random-token reply into shared memory so the m68k side detects the ack. This replaces the old `DMA_IRQ_1`-driven snoop in `term.c`.
+- `gconfig.c` / `aconfig.c` — global vs per-app configuration stored in dedicated flash sectors, on top of `settings/` (a key-value store). The global-config defaults in `gconfig.c` mirror the Booster app and include WiFi parameters even though this template no longer brings up networking — don't trim them.
 - `sdcard.c`, `hw_config.c` — FatFs over SPI/SDIO via the bundled `fatfs-sdk`.
 - `display.c`, `display_term.c`, `term.c`, `u8g2/` — terminal-style display rendered into the Atari framebuffer at `$FAE0C0` and/or a local OLED.
-- `blink.c`, `select.c`, `reset.c`, `tprotocol.c` — LED Morse status, SELECT-button handling, soft reset/jump-to-booster, transport protocol primitives.
+- `select.c`, `reset.c`, `tprotocol.c` — SELECT-button handling, soft reset/jump-to-booster, transport protocol primitives.
 
 ### Memory layout (`rp/src/memmap_rp.ld`)
 The RP2040's 2 MB flash is sliced into named regions, and code is responsible for not stomping on them:

@@ -20,7 +20,6 @@
 #include "ff.h"
 #include "gconfig.h"
 #include "memfunc.h"
-#include "network.h"
 #include "pico/stdlib.h"
 #include "reset.h"
 #include "romemul.h"
@@ -78,13 +77,6 @@ static bool keepActive = true;
 static bool menuScreenActive = false;
 static absolute_time_t menuRefreshTime;
 
-// Polling tick used as the network poll callback so command handling stays
-// alive during multi-second WiFi operations.
-static void __not_in_flash_func(emul_pollTick)(void) {
-  chandler_loop();
-  term_loop();
-}
-
 #define MENU_REFRESH_TIME_MS 1000
 
 // Should we reset the device, or jump to the booster app?
@@ -105,8 +97,8 @@ static void menu(void) {
   term_printString("[S]ettings     | [F]irmware launch\n");
   term_printString("[E]xit desktop | [X] Back to Booster\n\n");
 
-  // Display network information
-  term_printNetworkInfo();
+  // Display device status (SELECT button + SD card).
+  term_printDeviceStatus();
 
   term_printString("\n");
   term_printString("Select an option: ");
@@ -216,7 +208,6 @@ static void preinit() {
   // Show the title
   showTitle();
   term_printString("\n\n");
-  term_printString("Configuring network... please wait...\n");
 
   display_refresh();
 }
@@ -392,90 +383,26 @@ void emul_start() {
   display_setupU8g2();
 
   // Pre-init the stuff
-  // In this example it only prints the please wait message, but can be used as
-  // a place to put other code that needs to be run before the network is
-  // initialized
+  // In this example it only shows the title, but can be used as
+  // a place to put other code that needs to run before the terminal UI.
   preinit();
 
-  // 6. Init the network, if needed
-  // It's always a good idea to wait for the network to be ready
-  // Get the WiFi mode from the settings
-  // If you are developing code that does not use the network, you can
-  // comment this section
-  // It's important to note that the network parameters are taken from the
-  // global configuration of the Booster app. The network parameters are
-  // ready only for the microfirmware apps.
-  SettingsConfigEntry *wifiMode =
-      settings_find_entry(gconfig_getContext(), PARAM_WIFI_MODE);
-  wifi_mode_t wifiModeValue = WIFI_MODE_STA;
-  if (wifiMode == NULL) {
-    DPRINTF("No WiFi mode found in the settings. No initializing.\n");
-  } else {
-    wifiModeValue = (wifi_mode_t)atoi(wifiMode->value);
-    if (wifiModeValue != WIFI_MODE_AP) {
-      DPRINTF("WiFi mode is STA\n");
-      wifiModeValue = WIFI_MODE_STA;
-      int err = network_wifiInit(wifiModeValue);
-      if (err != 0) {
-        DPRINTF("Error initializing the network: %i. No initializing.\n", err);
-      } else {
-        // Drain commands and run the terminal loop during WiFi polling so
-        // commands sent during the (potentially multi-second) connect don't
-        // pile up in the ROM3 ring.
-        network_setPollingCallback(emul_pollTick);
-        // Connect to the WiFi network
-        int maxAttempts = 3;  // or any other number defined elsewhere
-        int attempt = 0;
-        err = NETWORK_WIFI_STA_CONN_ERR_TIMEOUT;
-
-        while ((attempt < maxAttempts) &&
-               (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-          err = network_wifiStaConnect();
-          attempt++;
-
-          if ((err > 0) && (err < NETWORK_WIFI_STA_CONN_ERR_TIMEOUT)) {
-            DPRINTF("Error connecting to the WiFi network: %i\n", err);
-          }
-        }
-
-        if (err == NETWORK_WIFI_STA_CONN_ERR_TIMEOUT) {
-          DPRINTF("Timeout connecting to the WiFi network after %d attempts\n",
-                  maxAttempts);
-          // Optionally, return an error code here.
-        }
-        network_setPollingCallback(NULL);
-      }
-    } else {
-      DPRINTF("WiFi mode is AP. No initializing.\n");
-    }
-  }
-
-  // 7. Configure the SELECT button so menu status can show it immediately.
+  // 6. Configure the SELECT button so menu status can show it immediately.
   select_configure();
 
-  // 8. Now complete the terminal emulator initialization
+  // 7. Now complete the terminal emulator initialization
   // The terminal emulator is used to interact with the user to configure the
   // device.
   init();
 
-  // Blink on
-#ifdef BLINK_H
-  blink_on();
-#endif
-
-  // 9. Start the main loop
+  // 8. Start the main loop
   // The main loop is the core of the app. It is responsible for running the
   // app, handling the user input, and performing the tasks of the app.
   // The main loop runs until the user decides to exit.
   // For testing purposes, this app only shows commands to manage the settings
   DPRINTF("Start the app loop here\n");
   while (getKeepActive()) {
-#if PICO_CYW43_ARCH_POLL
-    network_safePoll();
-    cyw43_arch_wait_for_work_until(make_timeout_time_ms(SLEEP_LOOP_MS));
-#else
     sleep_ms(SLEEP_LOOP_MS);
-#endif
     // Drain the ROM3 command ring → dispatch to registered callbacks.
     chandler_loop();
 
@@ -494,7 +421,7 @@ void emul_start() {
     }
   }
 
-  // 10. Send RESET computer command
+  // 9. Send RESET computer command
   // Ok, so we are done with the setup but we want to reset the computer to
   // reboot in the same microfirmware app or start the booster app
 
