@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // Modify the name to your project name
+            "name": "MULTIDEVICE UFIRMWARE TEMPLATE Debug",
+            "cwd": "${workspaceFolder}",
+            "executable": "${command:cmake.launchTargetPath}",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            // Dynamic GDB path based on environment variable
+            "gdbPath": "${env:ARM_GDB_PATH}/bin/arm-none-eabi-gdb",
+            "device": "RP2040",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/rp2040.cfg"
+            ],
+            "serverArgs": [
+                "-c",
+                "adapter speed 5000"
+            ],
+            "svdFile": "./pico-sdk/src/rp2040/hardware_regs/rp2040.svd",
+            // "runToEntryPoint": "false",
+            // Work around for stopping at main on restart
+            "postRestartCommands": [
+                "set remotetimeout 5",
+                "break main",
+                "continue"
+            ],
+            "searchDir": [
+                // Dynamic OpenOCD path
+                "${env:PICO_OPENOCD_PATH}"
+            ],
+            "showDevDebugOutput": "raw",
+            "liveWatch": {
+                "enabled": true,
+                "interval": 500
+            }
+        }
+    ]
+}

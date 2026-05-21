@@ -1,0 +1,18 @@
+{
+  "uuid": "<APP_UUID>",
+  "name": "APP DEV Template",
+  "description": "Microfirmware Application Template for Atari ST",
+  "image": "https://placehold.co/256x256/png",
+  "tags": [
+    "Sample",
+  ],
+  "devices": [
+    "ST",
+    "STE",
+    "MegaST",
+    "MegaSTE"
+  ],
+  "binary": "https://atarist.sidecartridge.com/<APP_UUID>-<APP_VERSION>.uf2",
+  "md5": "<BINARY_MD5_HASH>",
+  "version": "<APP_VERSION>"
+}

@@ -1,0 +1,37 @@
+# Ignore the pico-sdk directory
+- src: "pico-sdk/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+# Ignore the pico-extras directory
+- src: "pico-extras/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+# Ignore the fatfs-sdk directory
+- src: "fatfs-sdk/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+# Build directory
+- src: "build/*"
+  reason: "Build directory, not source code."
+  justified: true
+
+# Ignore more libraries
+- src: "rp/src/httpc/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+- src: "rp/src/settings/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+- src: "rp/src/ug82/*"
+  reason: "Third-party code, not part of the project."
+  justified: true
+
+# Target firmware directory
+- src: "target/*"
+  reason: "Build directory, not source code."
+  justified: true

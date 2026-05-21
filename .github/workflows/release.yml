@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        python-version: [ "3.10" ]
+        include:
+          - os: ubuntu-latest
+    steps:
+    - name: Checkout the code
+      uses: actions/checkout@v3
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install the Pico Toolchain
+      run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt update
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
+
+    - name: Install AtariST Toolkit Docker image
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.0.0/install_atarist_toolkit_docker.sh | bash
+
+    - name: Run - remove interactive
+      run: sed -i 's/-it//' /usr/local/bin/stcmd
+
+    - name: Install dependencies
+      run: |
+        pip install boto3
+          
+    - name: Run - Build PICO_W release version
+      env:
+        APP_UUID: ${{ secrets.APP_UUID }}
+      run: ./build.sh pico_w Release ${APP_UUID:-44444444-4444-4444-8444-444444444444}
+
+    - name: Get current date
+      id: build
+      run: echo "::set-output name=date::$(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+
+    - name: Get version from version.txt
+      id: get_version
+      run: echo "RELEASE_VERSION=$(cat version.txt)" >> $GITHUB_ENV
+
+    - name: Read partial CHANGELOG.md content
+      id: changelog
+      run: |
+        echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+        awk '/^---$/ { exit } { print }' CHANGELOG.md >> $GITHUB_ENV
+        echo "EOF" >> $GITHUB_ENV
+
+    - name: Copy release artifacts
+      run: |
+        mkdir -p release
+        cp dist/*.uf2 release/
+        cp dist/*.json release/
+
+    - name: Upload the binaries to release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: release/*
+        tag: ${{ github.ref }}
+        release_name: ${{ env.RELEASE_VERSION }}
+        body: |
+          **Release Notes:**
+          - Build Date: ${{ steps.build.outputs.date }}
+          - Version: ${{ env.RELEASE_VERSION }}
+
+          ${{ env.CHANGELOG }}
+        file_glob: true
+        overwrite: true
+        make_latest: true
+
+    - name: Upload artifacts to S3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: us-east-1  # or your bucket's region
+      run: |
+        python3 <<EOF
+        import os
+        import boto3
+
+        s3 = boto3.client('s3')
+        release_dir = 'release'
+        bucket_name = 'atarist.sidecartridge.com'
+
+        for filename in os.listdir(release_dir):
+            local_path = os.path.join(release_dir, filename)
+            s3_path = filename  # uploaded at root of the bucket
+            print(f"Uploading {local_path} to s3://{bucket_name}/{s3_path}")
+            s3.upload_file(local_path, bucket_name, s3_path)
+        EOF
+
+  

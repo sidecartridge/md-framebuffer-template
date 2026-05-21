@@ -1,0 +1,17 @@
+{
+  "uuid": "<APP_UUID>",
+  "name": "<APP_NAME>",
+  "description": "<APP_DESCRIPTION>",
+  "image": "<APP_IMAGE_URL>",
+  "tags": [
+    "<TAG1>",
+    "<TAG2>"
+  ],
+  "devices": [
+    "<SUPPORTED_DEVICE_1>",
+    "<SUPPORTED_DEVICE_2>"
+  ],
+  "binary": "<APP_BINARY_URL>",
+  "md5": "<BINARY_MD5_HASH>",
+  "version": "<APP_VERSION>"
+}

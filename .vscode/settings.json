@@ -1,0 +1,53 @@
+{
+    "cmake.statusbar.advanced": {
+        "debug": {
+            "visibility": "hidden"
+        },
+        "launch": {
+            "visibility": "hidden"
+        },
+        "build": {
+            "visibility": "default"
+        },
+        "buildTarget": {
+            "visibility": "hidden"
+        }
+    },
+    "cmake.buildBeforeRun": true,
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    // Dynamic GDB path using environment variable for better portability
+    "cortex-debug.gdbPath": "${env:ARM_GDB_PATH}/bin/arm-none-eabi-gdb",
+    // Dynamic source and build directories based on workspace name
+    "cmake.sourceDirectory": "${workspaceFolder}/rp/src",
+    "cmake.buildDirectory": "${workspaceFolder}/rp/build",
+    // Disabling error squiggles to reduce clutter, but consider "enabled" for more feedback
+    "C_Cpp.errorSquiggles": "disabled",
+    "C_Cpp.codeAnalysis.clangTidy.enabled": true,
+    "C_Cpp.codeAnalysis.exclude": {
+        "**/fatfs-sdk": true,
+        "**/pico-sdk": true,
+        "**/pico-extras": true,
+        "**/dist": true,
+        "**/rp/src/httpc": true,
+        "**/rp/src/settings": true,
+        "**/rp/src/ug82": true,
+        "**/rp/build": true,
+        "**/target": true
+    },
+    "C_Cpp.clangTidy.args": [],
+    "[cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools"
+    },
+    "[c]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools"
+    },
+    "C_Cpp.clang_format_style": "file:${workspaceFolder}/.clang-format",
+    "C_Cpp.formatting": "clangFormat",
+    "editor.formatOnSave": true,
+    "C_Cpp.codeAnalysis.clangTidy.useBuildPath": true,
+    "C_Cpp.codeAnalysis.clangTidy.path": "/usr/local/opt/llvm/bin/clang-tidy",
+    "C_Cpp.codeAnalysis.clangTidy.checks.disabled": [],
+    "C_Cpp.codeAnalysis.clangTidy.args": [
+        "--extra-arg=-ferror-limit=1"
+    ]
+}
