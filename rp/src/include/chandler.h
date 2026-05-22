@@ -26,53 +26,49 @@
 // ROM4_ADDR ($FA0000) on the m68k side. Layout (single source of truth,
 // must match target/atarist/src/main.s):
 //
-//   $FA0000  CARTRIDGE             m68k header + code (max 8 KB)
-//   $FA2000  CMD_MAGIC_SENTINEL    4 B  (m68k polls here for NOP/RESET/
+//   $FA0000  CARTRIDGE             m68k header + code (max 16 KB)
+//                                  Now includes the unrolled MOVEM
+//                                  block (fbdrv) at offset $2000
+//                                  (Story 1.2.6). Cart budget bumped
+//                                  from 8 KB to 16 KB.
+//   $FA4000  CMD_MAGIC_SENTINEL    4 B  (m68k polls here for NOP/RESET/
 //                                        BOOT_GEM/TERMINAL)
-//   $FA2004  RANDOM_TOKEN          4 B  (chandler echoes the request token)
-//   $FA2008  RANDOM_TOKEN_SEED     4 B
-//   $FA200C  reserved              4 B
-//   $FA2010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots)
-//   $FA2100  APP_BUFFERS              ~48 KB arena
-//                                      The first 512 bytes (until $FA2300)
-//                                      are written by display_setupU8g2()
-//                                      with the high-res mask table the
-//                                      cartridge uses to render the
-//                                      framebuffer in 640x400 mode. Apps
-//                                      that don't use the high-res path
-//                                      can reclaim those 512 bytes; apps
-//                                      that do must skip the first
-//                                      CHANDLER_HIGHRES_TRANSTABLE_SIZE
-//                                      bytes of APP_BUFFERS.
-//   $FA2300  APP_FREE                 free for app-specific use until the
-//                                      framebuffer (~48 KB)
-//   $FAE0C0  FRAMEBUFFER         8000 B  (320x200 mono; sits at the top
-//                                         so an overrun walks off the end
-//                                         of the 64 KB region and into
-//                                         unused RP RAM)
+//   $FA4004  RANDOM_TOKEN          4 B  (chandler echoes the request token)
+//   $FA4008  RANDOM_TOKEN_SEED     4 B
+//   $FA400C  FB_FRAME_COUNTER      4 B  (RP-incremented dirty-frame marker;
+//                                        m68k VBL loop skips the cart->ST
+//                                        blit when this is unchanged since
+//                                        the previous iteration)
+//   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots)
+//   $FA4100  APP_FREE           ~16.5 KB free arena, ends at FRAMEBUFFER
+//   $FA8300  FRAMEBUFFER          32 KB  (320x200 4bpp low-res; flush to
+//                                         the top of the 64 KB region so
+//                                         an overrun walks off the end
+//                                         into unused RP RAM)
 //   $FAFFFF  end of region
-#define CHANDLER_CARTRIDGE_CODE_SIZE       0x2000  /* 8 KB cartridge budget */
+#define CHANDLER_CARTRIDGE_CODE_SIZE       0x4000  /* 16 KB cartridge budget */
 #define CHANDLER_SHARED_BLOCK_OFFSET       CHANDLER_CARTRIDGE_CODE_SIZE
 #define CHANDLER_CMD_SENTINEL_OFFSET       CHANDLER_SHARED_BLOCK_OFFSET
 #define CHANDLER_RANDOM_TOKEN_OFFSET       (CHANDLER_CMD_SENTINEL_OFFSET + 4)
 #define CHANDLER_RANDOM_TOKEN_SEED_OFFSET  (CHANDLER_RANDOM_TOKEN_OFFSET + 4)
-/* 4-byte slot reserved for future framework use. chandler_init zeroes
- * it at boot; apps must not write here. */
-#define CHANDLER_RESERVED_OFFSET           (CHANDLER_RANDOM_TOKEN_SEED_OFFSET + 4)
-#define CHANDLER_SHARED_VARIABLES_OFFSET   (CHANDLER_RESERVED_OFFSET + 4)
+/* Framebuffer dirty-frame counter. The RP writes a monotonically
+ * increasing 32-bit value here as the LAST step of fb_render_frame()
+ * (after a memory barrier to make sure all FB writes have committed).
+ * The m68k userfw VBL loop reads this each frame and skips the cart->ST
+ * blit + video-base flip when the value is unchanged since the previous
+ * iteration. This rolls "tearing fence" + "skip work when idle" into a
+ * single monotonic counter. chandler_init zeroes it at boot. */
+#define CHANDLER_FB_FRAME_COUNTER_OFFSET   (CHANDLER_RANDOM_TOKEN_SEED_OFFSET + 4)
+#define CHANDLER_SHARED_VARIABLES_OFFSET   (CHANDLER_FB_FRAME_COUNTER_OFFSET + 4)
 #define CHANDLER_SHARED_VARIABLES_SLOTS    60  /* 240 bytes total */
-#define CHANDLER_APP_BUFFERS_OFFSET                                            \
+#define CHANDLER_APP_FREE_OFFSET                                               \
   (CHANDLER_SHARED_VARIABLES_OFFSET + (CHANDLER_SHARED_VARIABLES_SLOTS * 4))
 
-/* High-res mask table written by display_generateMaskTable() at the start
- * of APP_BUFFERS. 256 entries x 16 bits = 512 bytes. Apps using the
- * high-res rendering path must not reuse this region. */
-#define CHANDLER_HIGHRES_TRANSTABLE_OFFSET CHANDLER_APP_BUFFERS_OFFSET
-#define CHANDLER_HIGHRES_TRANSTABLE_SIZE   0x200  /* 512 bytes */
-#define CHANDLER_APP_FREE_OFFSET                                               \
-  (CHANDLER_HIGHRES_TRANSTABLE_OFFSET + CHANDLER_HIGHRES_TRANSTABLE_SIZE)
-
-#define CHANDLER_FRAMEBUFFER_SIZE  0x1F40  /* 8000 bytes (320x200 mono) */
+/* Framebuffer is now sized for low-res 4 bpp (320 x 200 = 32000 bytes).
+ * It sits flush against the top of the 64 KB region: end = $FB0000 exactly,
+ * start = $FB0000 - 32000 = $FA8300. APP_FREE's upper bound is implicitly
+ * the framebuffer base. */
+#define CHANDLER_FRAMEBUFFER_SIZE  32000
 #define CHANDLER_FRAMEBUFFER_OFFSET (0x10000 - CHANDLER_FRAMEBUFFER_SIZE)
 #define CHANDLER_REGION_END        0x10000  /* 64 KB shared region top */
 

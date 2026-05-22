@@ -56,7 +56,9 @@ secrets.sh
 upload_s3.sh
 .history/
 build/
+build-*/
 dist/
 .cache/
 .claude/
 docs/epics/
+target/atarist/src/fbdrv.s

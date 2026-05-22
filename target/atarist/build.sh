@@ -15,6 +15,18 @@ working_folder=$1
 build_type=$2
 target_firmware="target_firmware.h"
 
+# Generate the unrolled MOVEM block (Story 1.2.6 Q3 Option B). gen_fbdrv.py
+# emits ~7 KB of mechanically-uniform assembly into src/fbdrv.s, which the
+# Makefile then assembles alongside main.s and userfw.s. Regenerating each
+# build keeps the script as the source of truth and avoids committing a
+# huge auto-generated .s file.
+python gen_fbdrv.py > src/fbdrv.s
+gen_status=$?
+if [ "$gen_status" -ne 0 ]; then
+    echo "ERROR: gen_fbdrv.py failed (status $gen_status)"
+    exit $gen_status
+fi
+
 # ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
 # STCMD_NO_TTY=1 keeps docker working when invoked from non-TTY contexts
 # (CI, sub-shells, build wrappers). Without it stcmd's `-it` flag aborts
@@ -27,13 +39,15 @@ if [ "$make_status" -ne 0 ]; then
     exit $make_status
 fi
 
-# Cartridge code budget: header + code must fit in 8 KB
+# Cartridge code budget: header + code + fbdrv must fit in 16 KB
 # (CHANDLER_CARTRIDGE_CODE_SIZE in rp/src/include/chandler.h, mirrored as
-# CARTRIDGE_CODE_SIZE in target/atarist/src/main.s). Enforce here so the
-# build fails fast instead of silently overlapping the shared block.
+# CARTRIDGE_CODE_SIZE in target/atarist/src/main.s). Bumped from 8 KB to
+# 16 KB in Story 1.2.6 to accommodate the unrolled MOVEM block at
+# offset $2000. Enforce here so the build fails fast instead of silently
+# overlapping the shared block.
 # stat directly on the host to avoid the stcmd banner contaminating stdout.
 boot_bin="$working_folder/dist/BOOT.BIN"
-cartridge_max=8192
+cartridge_max=16384
 if [ ! -f "$boot_bin" ]; then
     echo "ERROR: $boot_bin not produced by stcmd make"
     exit 4

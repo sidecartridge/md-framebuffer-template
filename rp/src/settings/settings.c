@@ -11,6 +11,49 @@
  */
 
 /**
+ * @brief Write the decimal representation of an unsigned 32-bit value
+ *        into `buf`, null-terminated. `buf` must be at least 11 bytes
+ *        (10 digits + NUL). On overflow the result is truncated.
+ *
+ * Hand-rolled replacement for `snprintf(buf, sz, "%u", n)` so this
+ * module doesn't drag newlib's vfprintf/snprintf format engine into
+ * the binary (~10 KB on RP2040).
+ */
+static void u32_to_dec(uint32_t n, char *buf, size_t buf_sz) {
+  char tmp[11];
+  int len = 0;
+  if (n == 0) {
+    tmp[len++] = '0';
+  } else {
+    while (n > 0) {
+      tmp[len++] = (char)('0' + (n % 10));
+      n /= 10;
+    }
+  }
+  int out = 0;
+  while (len > 0 && (size_t)(out + 1) < buf_sz) {
+    buf[out++] = tmp[--len];
+  }
+  if (buf_sz > 0) {
+    buf[out] = '\0';
+  }
+}
+
+/**
+ * @brief Decimal representation of a signed 32-bit value. Negative
+ *        values get a leading '-'. Buffer needs 12 bytes (-2^31).
+ */
+static void i32_to_dec(int32_t n, char *buf, size_t buf_sz) {
+  if (n < 0 && buf_sz > 1) {
+    buf[0] = '-';
+    /* Negate via int64_t so INT32_MIN doesn't overflow. */
+    u32_to_dec((uint32_t)(-(int64_t)n), buf + 1, buf_sz - 1);
+  } else {
+    u32_to_dec((uint32_t)n, buf, buf_sz);
+  }
+}
+
+/**
  * @brief Verify the format of a given key (uppercase, numbers, or '_').
  */
 static int checkKeyFormat(const char key[SETTINGS_MAX_KEY_LENGTH]) {
@@ -259,8 +302,7 @@ int settings_init(SettingsContext *ctx,
 
   // Fill the special "MAGICVERSION" entry
   char magicValue[SETTINGS_MAX_VALUE_LENGTH];
-  snprintf(magicValue, sizeof(magicValue), "%lu",
-           (unsigned long)ctx->configData.magic);
+  u32_to_dec((uint32_t)ctx->configData.magic, magicValue, sizeof(magicValue));
   SettingsConfigEntry magicEntry = {
       SETTINGS_MAGICVERSION_KEY, SETTINGS_TYPE_INT, {0}};
   strncpy(magicEntry.value, magicValue, SETTINGS_MAX_VALUE_LENGTH - 1);
@@ -446,8 +488,7 @@ int settings_put_string(SettingsContext *ctx,
 
 int settings_put_integer(SettingsContext *ctx, const char *key, int value) {
   char buffer[SETTINGS_MAX_VALUE_LENGTH];
-  snprintf(buffer, sizeof(buffer), "%d", value);
-  buffer[SETTINGS_MAX_VALUE_LENGTH - 1] = '\0';
+  i32_to_dec((int32_t)value, buffer, sizeof(buffer));
   return settingsUpdateEntry(ctx, key, SETTINGS_TYPE_INT, buffer);
 }
 
@@ -474,7 +515,6 @@ void settings_print(SettingsContext *ctx, char *buffer) {
   }
 
   char *ptr = outputBuffer;
-  size_t len = 0;
 
   // Loop through each entry
   for (size_t i = 0; i < ctx->configData.count && remaining > 0; i++) {
@@ -494,13 +534,23 @@ void settings_print(SettingsContext *ctx, char *buffer) {
         break;
     }
 
-    // Print in the format: "KEY (TYPE): Value\n"
-    len = snprintf(ptr, remaining, "%s (%s): %s\n",
-                   ctx->configData.entries[i].key, typeStr,
-                   ctx->configData.entries[i].value);
-
-    ptr += len;
-    remaining = (len < remaining) ? (remaining - len) : 0;
+    // Print in the format: "KEY (TYPE): Value\n" via inline concat --
+    // no snprintf so the printf format engine stays out of the binary.
+    const char *parts[] = {
+        ctx->configData.entries[i].key,
+        " (",
+        typeStr,
+        "): ",
+        ctx->configData.entries[i].value,
+        "\n",
+    };
+    for (size_t pi = 0; pi < sizeof(parts) / sizeof(parts[0]); pi++) {
+      const char *src = parts[pi];
+      while (*src && remaining > 1) {
+        *ptr++ = *src++;
+        remaining--;
+      }
+    }
   }
 
   // Ensure null-termination

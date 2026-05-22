@@ -1,7 +1,15 @@
 #!/bin/bash
+set -euo pipefail
 
 # Down to main path
 cd ..
+
+# Clear stale git submodule index locks left behind by interrupted prior
+# runs ("set -e" + git fatals + nested submodules occasionally leave
+# .git/modules/*/index.lock around, which blocks every subsequent
+# `git submodule update`). Safe to do unconditionally because we're not
+# running any concurrent git operations.
+find .git -name "index.lock" -delete 2>/dev/null || true
 
 # Install SDK needed for building
 git submodule init
@@ -34,7 +42,7 @@ export PICO_SDK_PATH=$PWD/pico-sdk
 export FATFS_SDK_PATH=$PWD/fatfs-sdk
 export PICO_EXTRAS_PATH=$PWD/pico-extras
 
-# Return to booster path
+# Return to rp path
 cd rp
 
 # Check if the third parameter is provided
@@ -66,40 +74,45 @@ echo "Board type: $BOARD_TYPE"
 # If nothing passed as second argument, use release
 export BUILD_TYPE=${2:-release}
 echo "Build type: $BUILD_TYPE"
+BUILD_TYPE_LOWER=$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')
 
-# If the build type is release, set DEBUG_MODE environment variable to 0
-# Otherwise set it to 1
-if [ "$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')" = "release" ]; then
+# Translate (board, build_type) into a CMakePresets.json preset name. The
+# preset's `environment` block sets PICO_BOARD + DEBUG_MODE for CMake, so
+# the script's exports above are redundant when using presets -- left in
+# place for parity with the env CMakeLists also reads (RELEASE_VERSION,
+# RELEASE_DATE).
+if [ "$BUILD_TYPE_LOWER" = "release" ]; then
     export DEBUG_MODE=0
+    PRESET_KIND="release"
 else
     export DEBUG_MODE=1
+    PRESET_KIND="debug"
 fi
 
-# Set the build directory. Delete previous contents if any
-echo "Deleting previous build directory"
-rm -rf build
-mkdir build
+CONFIGURE_PRESET="${BOARD_TYPE}-${PRESET_KIND}"
+BUILD_PRESET="${BOARD_TYPE}-${PRESET_KIND}"
+BUILD_DIR="build-${BOARD_TYPE}-${PRESET_KIND}"
+echo "Configure preset: $CONFIGURE_PRESET"
+echo "Build preset: $BUILD_PRESET"
 
-# We assume that the last firmware was built for the same board type
-# And previously pushed to the repo version
+# Clean only the preset-specific build directory so debug + release
+# builds can coexist on disk.
+echo "Deleting previous preset build directory: $BUILD_DIR"
+rm -rf "$BUILD_DIR"
 
-# Build the project
-# NOTE: The project is always built with CMAKE_BUILD_TYPE=MinSizeRel.
-#       Using a full Release build previously caused breakage (e.g. memory issues/over‑optimizations).
-echo "Building the project"
-cd build
-# Legacy option to honor BUILD_TYPE instead of forcing MinSizeRel:
-# cmake ../src -DCMAKE_BUILD_TYPE=$BUILD_TYPE
-cmake ../src -DCMAKE_BUILD_TYPE=MinSizeRel
-
-make -j4 
+# CMakePresets.json lives in rp/src/ -- configure + build are run from
+# there.
+(
+    cd src
+    cmake --preset "$CONFIGURE_PRESET"
+    cmake --build --preset "$BUILD_PRESET"
+)
 
 # Copy the built firmware to the /dist folder
-cd ..
 mkdir -p dist
 echo "Copying the built firmware to the dist folder"
-if [ "$BUILD_TYPE" = "release" ]; then
-    cp build/rp.uf2 dist/rp-$BOARD_TYPE.uf2
+if [ "$BUILD_TYPE_LOWER" = "release" ]; then
+    cp "$BUILD_DIR/rp.uf2" "dist/rp-$BOARD_TYPE.uf2"
 else
-    cp build/rp.uf2 dist/rp-$BOARD_TYPE-$BUILD_TYPE.uf2
+    cp "$BUILD_DIR/rp.uf2" "dist/rp-$BOARD_TYPE-$BUILD_TYPE.uf2"
 fi

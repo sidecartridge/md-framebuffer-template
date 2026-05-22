@@ -27,35 +27,42 @@ ROM4_ADDR			equ $FA0000
 
 ; Shared 64 KB region layout (must match rp/src/include/chandler.h).
 ;
-;   $FA0000  CARTRIDGE			m68k header + code (max 8 KB)
-;   $FA2000  CMD_MAGIC_SENTINEL_ADDR	4 B
-;   $FA2004  RANDOM_TOKEN_ADDR		4 B
-;   $FA2008  RANDOM_TOKEN_SEED_ADDR	4 B
-;   $FA200C  reserved			4 B
-;   $FA2010  SHARED_VARIABLES		240 B (60 x 4-byte slots)
-;   $FA2100  APP_BUFFERS_ADDR	       ~48 KB free arena (TRANSTABLE etc.)
-;   $FAE0C0  FRAMEBUFFER_ADDR		8000 B (320x200 mono, at the top)
+;   $FA0000  CARTRIDGE			m68k header + code (max 16 KB)
+;					Includes the unrolled MOVEM block
+;					(fbdrv.s) at offset $2000.
+;   $FA4000  CMD_MAGIC_SENTINEL_ADDR	4 B
+;   $FA4004  RANDOM_TOKEN_ADDR		4 B
+;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B
+;   $FA400C  reserved			4 B
+;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots)
+;   $FA4100  APP_FREE_ADDR	      ~16.5 KB free arena, ends at FRAMEBUFFER
+;   $FA8300  FRAMEBUFFER_ADDR	      32000 B (320x200 4bpp, flush at top)
 ;   $FAFFFF  end of region
 
-CARTRIDGE_CODE_SIZE	equ $2000	; 8 KB max for cartridge header + code
-SHARED_BLOCK_ADDR	equ (ROM4_ADDR + CARTRIDGE_CODE_SIZE)		; $FA2000
-CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA2000
+CARTRIDGE_CODE_SIZE	equ $4000	; 16 KB max for cartridge header + code + fbdrv
+SHARED_BLOCK_ADDR	equ (ROM4_ADDR + CARTRIDGE_CODE_SIZE)		; $FA4000
+CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA4000
 
-FRAMEBUFFER_SIZE	equ 8000	; 8000 bytes of a 320x200 monochrome screen
-FRAMEBUFFER_ADDR	equ (ROM4_ADDR + $10000 - FRAMEBUFFER_SIZE)	; $FAE040
-APP_BUFFERS_ADDR	equ (SHARED_BLOCK_ADDR + $100)			; $FA2100
-TRANSTABLE		equ APP_BUFFERS_ADDR				; high-res translation table
+FRAMEBUFFER_SIZE	equ 32000	; 320x200 low-res (4bpp) framebuffer
+FRAMEBUFFER_ADDR	equ (ROM4_ADDR + $10000 - FRAMEBUFFER_SIZE)	; $FA8300
+APP_FREE_ADDR		equ (SHARED_BLOCK_ADDR + $100)			; $FA4100
+FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
+
+; Transitional: the pre-Story-1.2 boot UI fills only the first 8000 bytes
+; of the framebuffer with a 1bpp u8g2 image, and the .print_loop_low
+; copy loop below expands that mono buffer to fit the 32000-byte ST
+; screen. Story 1.2.6+ replaces that loop with the native 4bpp fbdrv
+; copy and this constant goes away.
+MONO_UI_BUFFER_SIZE	equ 8000
 
 ; User firmware entry point. The cartridge image places userfw.s at
 ; offset $0800 of BOOT.BIN via target/atarist/src/userfw.ld; main.s
 ; gets the first 2 KB ($0000..$07FF), userfw gets the next 6 KB
-; ($0800..$1FFF). The CARTRIDGE_CODE_SIZE = 8 KB cap covers both.
+; ($0800..$1FFF), and fbdrv.s occupies the rest of the 16 KB cart
+; budget ($2000..$3FFF). The CARTRIDGE_CODE_SIZE = 16 KB cap covers all.
 USERFW			equ (ROM4_ADDR + $800)				; $FA0800
 
 SCREEN_SIZE			equ (-4096)	; Use the memory before the screen memory to store the copied code
-COLS_HIGH			equ 20		; 16 bit columns in the ST
-ROWS_HIGH			equ 200		; 200 rows in the ST
-BYTES_ROW_HIGH		equ 80		; 80 bytes per row in the ST
 PRE_RESET_WAIT		equ $FFFFF
 
 ; If 1, the display will not use the framebuffer and will write directly to the
@@ -73,16 +80,17 @@ _conterm			equ $484	; Conterm device number
 
 
 ; Constants needed for the commands
-RANDOM_TOKEN_ADDR:        equ (CMD_MAGIC_SENTINEL_ADDR + 4)  ; $FA2004
-RANDOM_TOKEN_SEED_ADDR:   equ (RANDOM_TOKEN_ADDR + 4)        ; $FA2008
-; $FA200C: 4-byte slot reserved for future framework use. chandler_init
-; zeroes it at boot; apps must not write here.
-RESERVED_SLOT_ADDR:       equ (RANDOM_TOKEN_SEED_ADDR + 4)   ; $FA200C
+RANDOM_TOKEN_ADDR:        equ (CMD_MAGIC_SENTINEL_ADDR + 4)  ; $FA4004
+RANDOM_TOKEN_SEED_ADDR:   equ (RANDOM_TOKEN_ADDR + 4)        ; $FA4008
+; $FA400C: Framebuffer dirty-frame counter. RP increments it after
+; every fb_render_frame() (with a memory barrier); userfw.s reads it
+; each VBL and skips the cart->ST blit + video flip when unchanged.
+FB_FRAME_COUNTER_ADDR:    equ (RANDOM_TOKEN_SEED_ADDR + 4)   ; $FA400C
 RANDOM_TOKEN_POST_WAIT:   equ $1                             ; Wait cycles after the RNG is ready
 COMMAND_TIMEOUT           equ $0000FFFF                      ; Timeout for the command
 COMMAND_WRITE_TIMEOUT     equ COMMAND_TIMEOUT                ; Timeout for write commands
 
-SHARED_VARIABLES:         equ (RESERVED_SLOT_ADDR + 4)       ; $FA2010 (60 indexed 4-byte slots)
+SHARED_VARIABLES:         equ (FB_FRAME_COUNTER_ADDR + 4)    ; $FA4010 (60 indexed 4-byte slots)
 
 ROMCMD_START_ADDR:        equ $FB0000					  ; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    	  equ ($ABCD) 					  ; Magic number header to identify a command
@@ -96,7 +104,9 @@ APP_TERMINAL 				equ $0 ; The terminal app
 APP_TERMINAL_START   		equ $0 ; Start terminal command
 APP_TERMINAL_KEYSTROKE 		equ $1 ; Keystroke command
 
-_dskbufp                equ $4c6                            ; Address of the disk buffer pointer    
+_dskbufp                equ $4c6                            ; Address of the disk buffer pointer
+; _p_cookies ($5a0) lives in inc/sidecart_functions.s (also used by
+; that file's detect_hw).
 
 
 	include inc/sidecart_macros.s
@@ -193,7 +203,7 @@ check_commands		macro
 
 ;Rom cartridge
 ; The cartridge image (header + code below) MUST fit in
-; CARTRIDGE_CODE_SIZE = $2000 (8 KB). The hard limit is enforced by
+; CARTRIDGE_CODE_SIZE = $4000 (16 KB). The hard limit is enforced by
 ; target/atarist/build.sh after vlink emits BOOT.BIN; any direct vasm /
 ; vlink invocation that bypasses the build script is unchecked, so keep
 ; an eye on BOOT.BIN's size when iterating outside ./build.sh.
@@ -238,79 +248,34 @@ start_rom_code:
 ; Enable bconin to return shift key status
 	or.b #%1000, _conterm.w
 
-; Get the resolution of the screen
+; Get the resolution of the screen. High-res (640x400 mono) is not
+; supported by the framebuffer template; bail to GEM with a message
+; mirroring md-sprites-demo's lowres_only branch.
 	get_rez
-	cmp.w #2, d0				; Check if the resolution is 640x400 (high resolution)
-	beq .print_loop_high		; If it is, print the message in high resolution
+	cmp.w #2, d0
+	beq .highres_unsupported
 
-.print_loop_low:
-	vsync_wait
+; Story 1.2: the old mono boot-UI loop (.print_loop_low, which read the
+; first 8 KB of the cartridge framebuffer and expanded it 1bpp -> 4bpp
+; into the ST screen) is gone. With u8g2 removed there's nothing left
+; to render in mono, and the expander mis-mapped any 4bpp content
+; written to the cart FB (40 cart bytes -> 1 ST row, so rows 0..4 of
+; a 4bpp image landed on ST rows 0, 4, 8, 12, 16). Boot straight into
+; the user firmware: userfw owns the VBL loop and runs fbdrv (or, on
+; STE-class machines, an inline blitter copy) which copies the cart FB
+; to ST screen verbatim with the correct 4bpp planar interpretation.
+	jmp USERFW
 
-; We must move from the cartridge ROM to the screen memory to display the messages
-	move.l a6, a0				; Set the screen memory address in a0
-	move.l #FRAMEBUFFER_ADDR, a1			; Set the cartridge ROM address in a1
-	move.l #((FRAMEBUFFER_SIZE / 2) -1), d0			; Set the number of words to copy
-.copy_screen_low:
-	move.w (a1)+ , d1			; Copy a word from the cartridge ROM
-	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
-	rol.w #8, d1				; swap high and low bytes
-	endif
-	move.w d1, d2				; Copy the word to d2
-	swap d2						; Swap the bytes
-	move.w d1, d2				; Copy the word to d2
-	move.l d2, (a0)+			; Copy the word to the screen memory
-	move.l d2, (a0)+			; Copy the word to the screen memory
-	dbf d0, .copy_screen_low    ; Loop until all the message is copied
+.highres_unsupported:
+	print .highres_unsupported_txt
+	bra boot_gem
 
-; Check the different commands and the keyboard
-	check_commands
+.highres_unsupported_txt:
+	dc.b "High resolution (640x400) not supported.",$d,$a
+	dc.b "Switch to low or medium res and reboot.",$d,$a
+	dc.b 0
+	even
 
-	bra .print_loop_low		; Continue printing the message
-
-.print_loop_high:
-	vsync_wait
-
-; We must move from the cartridge ROM to the screen memory to display the messages
-	move.l a6, a1				; Set the screen memory address in a1
-	move.l a6, a2
-	lea BYTES_ROW_HIGH(a2), a2	; Move to the next line in the screen
-	move.l #FRAMEBUFFER_ADDR, a0		; Set the cartridge ROM address in a0
-	move.l #TRANSTABLE, a3		; Set the translation table in a3
-	move.l #(ROWS_HIGH -1), d0	; Set the number of rows to copy - 1
-.copy_screen_row_high:
-	move.l #(COLS_HIGH -1), d1	; Set the number of columns to copy - 1 
-.copy_screen_col_high:
-	move.w (a0)+ , d2			; Copy a word from the cartridge ROM
-
-	ifne DISPLAY_BYPASS_FRAMEBUFFER == 1
-	rol.w #8, d2				; swap high and low bytes
-	endif
-
-	move.w d2, d3				; Copy the word to d3
-	and.w #$FF00, d3			; Mask the high byte
-	lsr.w #7, d3				; Shift the high byte 7 bits to the right
-	move.w (a3, d3.w), d4		; Translate the high byte
-	swap d4						; Swap the words
-
-	and.w #$00FF, d2			; Mask the low byte
-	add.w d2, d2				; Double the low byte
-	move.w (a3, d2.w), d4		; Translate the low byte
-
-	move.l d4, (a1)+			; Copy the word to the screen memory
-	move.l d4, (a2)+			; Copy the word to the screen memory
-
-	dbf d1, .copy_screen_col_high   ; Loop until all the message is copied
-
-	lea BYTES_ROW_HIGH(a1), a1	; Move to the next line in the screen
-	lea BYTES_ROW_HIGH(a2), a2	; Move to the next line in the screen
-
-	dbf d0, .copy_screen_row_high   ; Loop until all the message is copied
-
-; Check the different commands and the keyboard
-	check_commands
-
-	bra .print_loop_high		; Continue printing the message
-	
 .reset:
     move.l #PRE_RESET_WAIT, d6
 .wait_me:

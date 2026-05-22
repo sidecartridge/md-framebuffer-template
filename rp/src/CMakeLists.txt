@@ -86,9 +86,6 @@ pico_sdk_init()
 
 add_subdirectory(settings)
 
-# Add u8g2 library
-add_subdirectory(u8g2)
-
 # Tell CMake where to find other source code
 add_subdirectory(${FATFS_SDK_PATH}/src build)
   
@@ -104,16 +101,16 @@ target_sources(${PROJECT_NAME} PRIVATE
         aconfig.c
         chandler.c
         commemul.c
-        display.c
-        display_term.c
         emul.c
+        fb.c
+        fb_draw.c
+        fb_font.c
         gconfig.c
         hw_config.c
         reset.c
         romemul.c
         sdcard.c
         select.c
-        term.c
         tprotocol.c
         settings/settings.c)
 
@@ -128,7 +125,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     pico_stdlib              # Core functionality
     pico_multicore          # Multicore support
     settings                 # Custom settings library
-    u8g2                     # for display
 )
 
 
@@ -189,8 +185,12 @@ if(NOT RELEASE_DATE)
         set(RELEASE_DATE ${CURRENT_DATE_TIME})
 endif()
 
-if (NOT _DEBUG)
-        set(_DEBUG 1)
+# Default _DEBUG to 0 when the env var isn't set at all. `if (NOT _DEBUG)`
+# would also fire for the string "0" (CMake treats "0" as falsy), silently
+# turning a CMakePresets release preset into a debug build. Mirrors the
+# pattern used in rp2-atarist-rpikb's CMakeLists.txt.
+if ("${_DEBUG}" STREQUAL "")
+        set(_DEBUG 0)
 endif()
 
 # Debug outputs

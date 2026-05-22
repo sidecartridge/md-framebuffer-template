@@ -70,9 +70,10 @@ void __not_in_flash_func(chandler_init)() {
   TPROTO_SET_RANDOM_TOKEN(shared_base + CHANDLER_RANDOM_TOKEN_SEED_OFFSET,
                           seed ^ 0xDEADBEEFu);
 
-  // Zero the reserved 4-byte slot so apps can rely on a known initial
-  // value if the framework later claims it for something concrete.
-  *((volatile uint32_t *)(shared_base + CHANDLER_RESERVED_OFFSET)) = 0;
+  // Initial dirty-frame counter = 0. fb_render_frame increments this
+  // after every redraw; the m68k userfw VBL loop only blits when the
+  // value changes.
+  *((volatile uint32_t *)(shared_base + CHANDLER_FB_FRAME_COUNTER_OFFSET)) = 0;
 
   chandler_clear_pending_protocol();
 }

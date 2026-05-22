@@ -17,9 +17,13 @@
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     // Dynamic GDB path using environment variable for better portability
     "cortex-debug.gdbPath": "${env:ARM_GDB_PATH}/bin/arm-none-eabi-gdb",
-    // Dynamic source and build directories based on workspace name
+    // Source dir contains CMakeLists.txt + CMakePresets.json. Build dirs
+    // are owned by the presets ("binaryDir" in CMakePresets.json), so we
+    // don't pin cmake.buildDirectory anymore.
     "cmake.sourceDirectory": "${workspaceFolder}/rp/src",
-    "cmake.buildDirectory": "${workspaceFolder}/rp/build",
+    "cmake.useCMakePresets": "always",
+    "cmake.defaultConfigurePreset": "pico_w-debug",
+    "cmake.defaultBuildPreset": "pico_w-debug",
     // Disabling error squiggles to reduce clutter, but consider "enabled" for more feedback
     "C_Cpp.errorSquiggles": "disabled",
     "C_Cpp.codeAnalysis.clangTidy.enabled": true,
@@ -28,10 +32,9 @@
         "**/pico-sdk": true,
         "**/pico-extras": true,
         "**/dist": true,
-        "**/rp/src/httpc": true,
         "**/rp/src/settings": true,
-        "**/rp/src/ug82": true,
-        "**/rp/build": true,
+        "**/rp/build-pico_w-debug": true,
+        "**/rp/build-pico_w-release": true,
         "**/target": true
     },
     "C_Cpp.clangTidy.args": [],
