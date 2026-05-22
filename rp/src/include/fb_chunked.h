@@ -1,0 +1,77 @@
+/**
+ * File: fb_chunked.h
+ * Description: Chunked-pixel framebuffer + chunky-to-planar publish path
+ *              (Epic 2 Story 2.1).
+ *
+ * App code draws into `fb_chunked_buffer` (one byte per pixel, palette
+ * index in the low nibble). A single conversion pass per frame
+ * (`fb_chunky_to_planar`) transposes the chunked bytes into the Atari
+ * ST 4 bpp planar layout that lives in the shared cart framebuffer at
+ * $FA8300, where the m68k VBL blit picks it up.
+ *
+ * The conversion writes 16-bit plane WORDS into cart-mirrored RP RAM,
+ * so the cart-bus byte-swap is transparent at the word level (same
+ * property the older direct-planar `pixel_masks_flat` writes relied
+ * on). Only the low 4 bits of each chunked byte are used; the high 4
+ * bits are dropped during transposition.
+ */
+
+#ifndef FB_CHUNKED_H_INCLUDED
+#define FB_CHUNKED_H_INCLUDED
+
+#include <stdint.h>
+
+#include "pico/stdlib.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Chunked framebuffer dimensions. Matches the Atari ST low-res screen
+ * the planar conversion targets. */
+#define FB_CHUNKED_W 320
+#define FB_CHUNKED_H 200
+#define FB_CHUNKED_SIZE (FB_CHUNKED_W * FB_CHUNKED_H)
+
+/* Storage lives in regular RP RAM (`RAM` region at 0x20000000), not the
+ * cart-mirrored ROM_IN_RAM region. Apps poke pixels here directly. */
+extern uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
+
+/* Launch Core 1 with the chunky-to-planar worker loop. Must be called
+ * once before the first call to fb_chunky_to_planar -- fb_init() does
+ * this. */
+void fb_chunked_init(void);
+
+/* Fill the entire chunked buffer with a single palette index. */
+void fb_chunked_clear(uint8_t color);
+
+/* Bounds-checked single-pixel plot; mostly useful for diagnostics. */
+static inline void fb_chunked_plot(unsigned int x, unsigned int y,
+                                   uint8_t color) {
+  if (x < FB_CHUNKED_W && y < FB_CHUNKED_H) {
+    fb_chunked_buffer[y * FB_CHUNKED_W + x] = color;
+  }
+}
+
+/**
+ * Transpose the chunked buffer into Atari ST 4 bpp planar format.
+ *
+ * Output layout per 16-pixel block (matches ST low-res):
+ *   word 0 = plane 0 (LSB of palette index)
+ *   word 1 = plane 1
+ *   word 2 = plane 2
+ *   word 3 = plane 3 (MSB)
+ * Within each word, bit (15 - i) corresponds to pixel `i` of the block.
+ *
+ * @param planar  Destination, must point to the cart framebuffer at
+ *                $FA8300 (= 32 000 bytes of cart-mirrored RP RAM).
+ *                Cart-bus byte-swap is invisible because we write
+ *                16-bit values, not raw bytes.
+ */
+void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* FB_CHUNKED_H_INCLUDED */

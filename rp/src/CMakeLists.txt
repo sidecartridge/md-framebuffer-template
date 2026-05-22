@@ -103,7 +103,9 @@ target_sources(${PROJECT_NAME} PRIVATE
         commemul.c
         emul.c
         fb.c
-        fb_draw.c
+        fb_blit.c
+        fb_chunked.c
+        fb_chunked_asm.S
         fb_font.c
         gconfig.c
         hw_config.c

@@ -16,7 +16,7 @@
 
 #include <string.h>
 
-#include "fb_draw.h"
+#include "fb_chunked.h"
 #include "fb_font.h"
 
 /* Renderer state declared extern in fb_font.h. */
@@ -30,15 +30,17 @@ static int __not_in_flash_func(render_text)(const char *text, int x, int y,
                                             unsigned int color) {
   if (!text || !*text) return x;
 
-  const int screen_width = fb_screen.width;
-  const int screen_height = fb_screen.height;
+  const int screen_width = FB_CHUNKED_W;
+  const int screen_height = FB_CHUNKED_H;
   const int glyph_w = font->w;
   const int glyph_h = font->h;
   const int first_char = font->first_char;
   const int last_char = first_char + font->num_chars; /* exclusive */
-  const unsigned int color_mask = (1u << fb_screen.color_bits) - 1u;
-  const unsigned int masked_color = color & color_mask;
-  const int row_bytes = screen_width / 8; /* bytes per scanline block group */
+  /* Chunked stores one palette index per byte; only the low nibble is
+   * meaningful for Atari ST 4 bpp. The full byte is stored as-is so
+   * the chunky-to-planar transposition can treat unused high bits as
+   * "don't care". */
+  const uint8_t pixel_color = (uint8_t)(color & 0x0F);
 
   while (*text) {
     unsigned char ch = (unsigned char)*text++;
@@ -79,7 +81,7 @@ static int __not_in_flash_func(render_text)(const char *text, int x, int y,
       uint8_t bits = glyph_rows[row];
       if (!bits) continue;
 
-      uint8_t *line = (uint8_t *)&fb_screen.framebuffer[py * row_bytes];
+      uint8_t *line = fb_chunked_buffer + (size_t)py * FB_CHUNKED_W;
 
       /* Iterate only visible columns; bit scanning skips unset pixels. */
       uint8_t masked_bits = (uint8_t)(bits & ((1u << glyph_w) - 1u));
@@ -93,18 +95,7 @@ static int __not_in_flash_func(render_text)(const char *text, int x, int y,
         masked_bits &= (masked_bits - 1); /* clear that bit */
         int px = gx0 + local_bit;
         if (px < vis_x0 || px >= vis_x1) continue;
-        uint8_t *block = line + ((px >> 4) * 8);
-        uint8_t pos = px & 0xF;
-        uint64_t clear_mask = pixel_masks_flat[(0xF << 4) | pos];
-        uint64_t set_mask = pixel_masks_flat[(masked_color << 4) | pos];
-        uint64_t *planes64 = (uint64_t *)block;
-        uint32_t old_lo = ((uint32_t *)planes64)[0];
-        uint32_t old_hi = ((uint32_t *)planes64)[1];
-        old_lo = (old_lo & ~((uint32_t)clear_mask)) | (uint32_t)set_mask;
-        old_hi = (old_hi & ~((uint32_t)(clear_mask >> 32))) |
-                 (uint32_t)(set_mask >> 32);
-        ((uint32_t *)planes64)[0] = old_lo;
-        ((uint32_t *)planes64)[1] = old_hi;
+        line[px] = pixel_color;
       }
     }
     x += glyph_w;
