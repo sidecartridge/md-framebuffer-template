@@ -63,7 +63,10 @@ void fb_chunked_clear(uint8_t color) {
 }
 
 void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
-  /* Dispatch bottom half to Core 1 (asynchronous, just queues). */
+  /* Dispatch bottom half to Core 1. The push is "blocking" in name but
+   * non-blocking in practice: we only ever have one outstanding message
+   * (Core 1 has drained the previous frame's signal before we get here)
+   * and the FIFO is 8 entries deep, so this returns immediately. */
   multicore_fifo_push_blocking((uint32_t)(uintptr_t)(planar + FB_C2P_HALF_DST_WORDS));
 
   /* Top half: Core 0 runs the worker directly, in parallel with Core 1. */
@@ -71,6 +74,9 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
               fb_chunked_buffer,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES);
 
-  /* Wait for Core 1 to finish its half. */
+  /* Wait for Core 1 to finish its half. The pop is a synchronization
+   * barrier: pico-sdk's FIFO primitives include DMB/DSB internally, so
+   * Core 1's planar writes are guaranteed visible to Core 0 by the
+   * time this returns. */
   (void)multicore_fifo_pop_blocking();
 }

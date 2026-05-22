@@ -38,8 +38,9 @@ extern "C" {
 extern uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
 
 /* Launch Core 1 with the chunky-to-planar worker loop. Must be called
- * once before the first call to fb_chunky_to_planar -- fb_init() does
- * this. */
+ * exactly once, from Core 0, before the first call to
+ * fb_chunky_to_planar. fb_init() does this. A second call would
+ * deadlock inside pico-sdk's launch handshake. */
 void fb_chunked_init(void);
 
 /* Fill the entire chunked buffer with a single palette index. */
@@ -62,6 +63,12 @@ static inline void fb_chunked_plot(unsigned int x, unsigned int y,
  *   word 2 = plane 2
  *   word 3 = plane 3 (MSB)
  * Within each word, bit (15 - i) corresponds to pixel `i` of the block.
+ *
+ * **Must be called from Core 0 only.** The implementation dispatches
+ * the bottom half of the buffer to Core 1 via the inter-core FIFO
+ * and blocks on Core 1's completion signal. Calling from Core 1
+ * deadlocks (Core 1 would push to a FIFO it isn't reading from, then
+ * block on a pop that never resolves).
  *
  * @param planar  Destination, must point to the cart framebuffer at
  *                $FA8300 (= 32 000 bytes of cart-mirrored RP RAM).

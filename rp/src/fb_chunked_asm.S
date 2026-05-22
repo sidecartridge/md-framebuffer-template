@@ -14,7 +14,7 @@
 @   -> bit 28. >> 28 brings them to bits 0-3 of the nibble, with pixel
 @   0 at the MSB (matching the Atari ST shifter's leftmost-pixel-is-
 @   MSB convention).
-@cv
+@
 @ Then nibble << position drops it at the right place inside the
 @ 16-bit plane word for group g (g = 0..3): position = 12 - 4*g for
 @ planes 0/2 (low half of the accumulator pair), 28 - 4*g for planes
@@ -85,6 +85,18 @@ fb_c2p_half:
 
         ldr     r2, .Lmul                @ multiplier constant
         ldr     r3, .Lmask               @ AND mask constant
+
+        @ Entry guard: empty / inverted range (src >= src_end) skips
+        @ all work. The loop's own end check is at the BOTTOM (work-
+        @ then-compare), so without this guard a zero-length call would
+        @ write 8 bytes past dst and read 16 bytes past src before the
+        @ comparison saw the exhaustion. BCC short-forwards into the
+        @ loop; the unconditional B reaches .Ldone (out of conditional-
+        @ branch range from here, but well within +-2 KB B range).
+        cmp     r1, r8
+        bcc     1f
+        b       .Ldone
+1:
 
 .Lblock_loop:
         movs    r4, #0                   @ P01 = 0
