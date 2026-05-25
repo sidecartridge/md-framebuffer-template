@@ -43,13 +43,13 @@
        // or poweroff. Only the first 64KB are used; ROM3 is no longer a
        // data bank (it is now used as the command channel).
 #define FLASH_ROM4_LOAD_OFFSET FLASH_ROM_LOAD_OFFSET  // 64KB ROM4 block
-#define ROM_SIZE_BYTES 0x10000                   // 64KBytes
-#define ROM_SIZE_WORDS (ROM_SIZE_BYTES / 2)      // 32KWords
-#define ROM_SIZE_LONGWORDS (ROM_SIZE_BYTES / 4)  // 16KLongWords
+#define ROM_SIZE_BYTES 0x10000                        // 64KBytes
+#define ROM_SIZE_WORDS (ROM_SIZE_BYTES / 2)           // 32KWords
+#define ROM_SIZE_LONGWORDS (ROM_SIZE_BYTES / 4)       // 16KLongWords
 
 // Frequency constants.
 #define SAMPLE_DIV_FREQ (1.f)         // Sample frequency division factor.
-#define RP2040_CLOCK_FREQ_KHZ 225000  // Clock frequency in KHz (225MHz).
+#define RP2040_CLOCK_FREQ_KHZ 260000  // Clock frequency in KHz (260MHz).
 
 // Voltage constants.
 #define RP2040_VOLTAGE VREG_VOLTAGE_1_10  // Voltage in 1.10 Volts.
