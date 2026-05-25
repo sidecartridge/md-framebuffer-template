@@ -1,5 +1,72 @@
 # Changelog
 
+## Unreleased
+
+### Added — IKBD keyboard ownership (Epic 3)
+
+Direct m68k ownership of the Atari ST IKBD ACIA, replacing TOS's
+interrupt-driven keyboard path:
+
+- `userfw.s` installs single-`rte` dummies at HBL (`$68`),
+  Timer-A/C/D (`$134`/`$114`/`$110`), and ACIA (`$118`) IRQ vectors;
+  MFP Timer A/C/D masked; Timer-B (`$120`) reprogrammed for HBL
+  event-count mode firing every 10 scanlines (~1500 Hz).
+- `userfw_timerb_ikbd` reads at most one byte per fire from the
+  ACIA RX register (md-oric pattern; a drain loop races the MC6850's
+  RX-ready bit which needs ~2 µs to clear) and forwards each byte to
+  RP via a single cart-bus read at `$FB8200 + byte` (md-devops
+  single-byte ABI, m68k cost: one `tst.b` instruction).
+- m68k boot config: `$80 $01` IKBD reset → ~110 ms busy-wait → `$12`
+  (disable mouse) → `$1A` (disable joysticks). Byte stream is pure
+  scancodes in steady state.
+- RP-side `ikbd.{c,h}` filters the `$FB8200..$FB82FF` window from
+  the existing commemul ROM3 ring, classifies bytes as press /
+  release / discard, and emits decoded events into a 16-entry ring
+  drained via `ikbd_pop_key()`.
+- ESC (scancode `$01`) press+release within 200 ms writes
+  `CART_CMD_BOOT_GEM` to the sentinel slot; the m68k VBL loop polls
+  the sentinel and exits cleanly back to GEM. Replaces the
+  GEMDOS-Cconis poll that the previous template used.
+
+Mouse and joystick decoding were attempted but proved unreliable on
+hardware (byte-stream desync, false ESC triggers from mouse motion).
+Both are documented as deferred in `docs/epics/epic-99-backlog.md`
+with full rationale and revisit checklists; the IKBD is explicitly
+configured to suppress mouse and joystick byte traffic at boot. Apps
+that want either can drop the corresponding IKBD-disable command in
+`userfw.s` and re-add demux branches.
+
+### Removed — chandler + TPROTOCOL command dispatcher (Epic 3 Story 3.8)
+
+`chandler.{c,h}` and `tprotocol.{c,h}` have been deleted from
+`rp/src/`. The template ships no command-channel callbacks today
+(IKBD ingest uses a direct `commemul_poll(ikbd_consume_rom3_sample)`
+in the main loop), so the dispatcher layer was pure dead weight
+(~565 lines).
+
+**Migration notes for forks:**
+
+- Cart-region constants moved from `rp/src/include/chandler.h` to
+  `rp/src/include/cart_shared.h`. The `CHANDLER_*` prefix is now
+  `CART_*` — e.g. `CHANDLER_CMD_SENTINEL_OFFSET` →
+  `CART_CMD_SENTINEL_OFFSET`, `chandler_asM68kLong` →
+  `cart_asM68kLong`.
+- `init_romemul(IRQInterceptionCallback, IRQInterceptionCallback, bool)`
+  reverted to the original single-arg form `init_romemul(bool)`.
+  The IRQ-callback extension was added in Story 3.3 for a DMA-IRQ
+  capture route that didn't survive testing.
+- `chandler_init()` no longer exists. Its only useful side effect
+  (zeroing `FB_FRAME_COUNTER`) moved into `fb_init()`. RANDOM_TOKEN
+  seeding was TPROTOCOL-only and is dropped.
+- `chandler_loop()` no longer exists. Replace with a direct
+  `commemul_poll(your_callback)` in your main loop.
+- Apps that registered callbacks via `chandler_addCB(cb)` must
+  rewrite as a `commemul_poll` callback — see `ikbd.c` for the
+  canonical pattern.
+
+The `commemul.{c,pio}` PIO+DMA ring is preserved; it's still the
+ROM3 cart-bus capture mechanism IKBD ingest depends on.
+
 ## v1.2.1 (2026-05-20) - release
 
 ### Sync ack: no false positives on missing hardware

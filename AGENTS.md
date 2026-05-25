@@ -37,7 +37,7 @@ PICO_TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/14.2.rel1/arm-none-eabi/bin \
 - Expect harmless VASM warnings (`target data type overflow`, `trailing garbage after option -D`).
 - The build script auto-copies `version.txt`, rebuilds the Atari target, then the RP target.
 - Successful builds drop UF2s into `dist/` as `<UUID>-v<version>.uf2` and print the MD5 used in the generated JSON manifest.
-- The Atari cartridge image (header + m68k code) must fit in 8 KB; `target/atarist/build.sh` enforces this against `BOOT.BIN` and aborts if exceeded. The 8 KB matches `CHANDLER_CARTRIDGE_CODE_SIZE` in `rp/src/include/chandler.h` and `CARTRIDGE_CODE_SIZE` in `target/atarist/src/main.s`.
+- The Atari cartridge image (header + m68k code) must fit in 16 KB; `target/atarist/build.sh` enforces this against `BOOT.BIN` and aborts if exceeded. The 16 KB matches `CART_CARTRIDGE_CODE_SIZE` in `rp/src/include/cart_shared.h` and `CARTRIDGE_CODE_SIZE` in `target/atarist/src/main.s`.
 - FatFs configuration lives at `rp/src/ff/ffconf.h`. `rp/src/CMakeLists.txt` puts that directory ahead of the `fatfs-sdk` include path with `target_include_directories(... BEFORE PRIVATE)`, so the override wins and the submodule stays clean. Do not edit the submodule's copy.
 
 ## 4. Troubleshooting

@@ -8,7 +8,6 @@
 
 #include "romemul.h"
 
-// Global variables to access them in the IRQ handlers
 static int readAddrRomDmaChannel = -1;
 static int lookupDataRomDmaChannel = -1;
 

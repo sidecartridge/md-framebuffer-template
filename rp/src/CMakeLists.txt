@@ -99,7 +99,6 @@ pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_LIST_DIR}/commemul.pio)
 
 target_sources(${PROJECT_NAME} PRIVATE
         aconfig.c
-        chandler.c
         commemul.c
         emul.c
         fb.c
@@ -108,12 +107,12 @@ target_sources(${PROJECT_NAME} PRIVATE
         fb_chunked_asm.S
         fb_font.c
         gconfig.c
+        ikbd.c
         hw_config.c
         reset.c
         romemul.c
         sdcard.c
         select.c
-        tprotocol.c
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files

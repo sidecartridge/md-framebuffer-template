@@ -5,7 +5,7 @@
  *              VBL (single-FB design, Story 1.2 Q1).
  *
  * The framebuffer base is derived from the linker symbol
- * `__rom_in_ram_start__` plus `CHANDLER_FRAMEBUFFER_OFFSET`, so the
+ * `__rom_in_ram_start__` plus `CART_FRAMEBUFFER_OFFSET`, so the
  * layout stays the single source of truth — apps must never hard-code
  * the address.
  */
@@ -14,7 +14,7 @@
 
 #include <string.h>
 
-#include "chandler.h"
+#include "cart_shared.h"
 #include "debug.h"
 #include "fb_blit.h"
 #include "fb_chunked.h"
@@ -70,13 +70,21 @@ int fb_init(const struct FB_MODE *mode) {
   }
   fb_screen.framebuffer =
       (unsigned int *)((unsigned int)&__rom_in_ram_start__ +
-                       CHANDLER_FRAMEBUFFER_OFFSET);
+                       CART_FRAMEBUFFER_OFFSET);
   fb_screen.width = mode->h_pixels;
   fb_screen.height = mode->v_pixels;
   fb_screen.color_bits = mode->color_bits;
   fb_frame_counter =
       (volatile uint32_t *)((uint8_t *)&__rom_in_ram_start__ +
-                            CHANDLER_FB_FRAME_COUNTER_OFFSET);
+                            CART_FB_FRAME_COUNTER_OFFSET);
+
+  /* Zero the dirty-frame counter so the m68k userfw VBL loop sees a
+   * clean baseline. The full shared region is already zeroed by
+   * emul_start's ERASE_FIRMWARE_IN_RAM, so this is defensive against
+   * future callers that might re-init fb without erasing. (Used to
+   * live in chandler_init; relocated in Epic 3 Story 3.8 when
+   * chandler was removed.) */
+  *fb_frame_counter = 0;
 
   /* Launch Core 1 with the chunky-to-planar bottom-half worker. */
   fb_chunked_init();
@@ -94,7 +102,7 @@ int fb_init(const struct FB_MODE *mode) {
 
   DPRINTF("FB: %dx%d, %d bpp at %p (size=%u)\n", fb_screen.width,
           fb_screen.height, fb_screen.color_bits, fb_screen.framebuffer,
-          (unsigned int)CHANDLER_FRAMEBUFFER_SIZE);
+          (unsigned int)CART_FRAMEBUFFER_SIZE);
   return 0;
 }
 
@@ -103,7 +111,7 @@ void fb_clear(void) {
    * palette renders as solid black (all four bitplanes set -> palette
    * index 15). 0x00 would be palette index 0 = white, which is hard
    * to distinguish from "framebuffer never touched". */
-  memset(fb_screen.framebuffer, 0xFF, CHANDLER_FRAMEBUFFER_SIZE);
+  memset(fb_screen.framebuffer, 0xFF, CART_FRAMEBUFFER_SIZE);
 }
 
 /* Story 2.2 smoke test: full template UI rendered via the chunked path.

@@ -2,16 +2,17 @@
  * File: emul.c
  * Description: Template microfirmware boot path. Brings up the cartridge
  *              bus emulator, the 32 KB color framebuffer, the ROM3
- *              command channel, the SD card, and the SELECT button, then
- *              hands off to a chandler-drained main loop.
+ *              command-capture ring, the SD card, and the SELECT
+ *              button, then enters a tight main loop that drains the
+ *              ROM3 ring into the IKBD demux and re-renders the
+ *              framebuffer.
  *
  * Story 1.2.12 stripped the previous u8g2-backed terminal subsystem
  * (term.c, display.c, display_term.h). The cart-side UI is now driven
  * entirely by fb.c writing into the 32 KB low-res framebuffer at
  * $FA8300, which the m68k userfw VBL loop blits to ST screen each
- * frame. Apps extend this template by:
- *   - drawing into `fb_screen.framebuffer` via fb_font / fb_draw, and
- *   - registering ROM3 callbacks with chandler_addCB().
+ * frame. Apps extend this template by drawing into
+ * `fb_screen.framebuffer` via fb_font / fb_blit.
  */
 
 #include "emul.h"
@@ -19,11 +20,11 @@
 #include <stdint.h>
 
 #include "aconfig.h"
-#include "chandler.h"
 #include "commemul.h"
 #include "debug.h"
 #include "fb.h"
 #include "ff.h"
+#include "ikbd.h"
 #include "memfunc.h"
 #include "pico/stdlib.h"
 #include "romemul.h"
@@ -50,10 +51,14 @@ void emul_start() {
   // Copy the cartridge image into the now-zeroed region.
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
 
+  // Reset the IKBD ring (init order before commemul_init is fine since
+  // the producer side runs from the main loop, not from an IRQ).
+  ikbd_init();
+
   // Initialise the cartridge ROM4 read engine. ROM4 reads are served
   // entirely by chained DMAs feeding the PIO TX FIFO -- no CPU/IRQ
-  // involvement. Without this engine the cartridge image is unreadable
-  // from the m68k, so a failure here is fatal.
+  // involvement. IKBD ingest is on ROM3 + commemul ring (see main
+  // loop below).
   if (init_romemul(false) < 0) {
     panic("init_romemul failed: PIO/DMA claim or program load returned <0");
   }
@@ -67,15 +72,14 @@ void emul_start() {
     panic("fb_init failed");
   }
 
-  // Bring up the ROM3 command capture (PIO + DMA ring on GPIO 26) and
-  // the command handler that polls the ring, parses the protocol, and
-  // dispatches each command to the registered callbacks. Apps add
-  // their own callbacks here via `chandler_addCB(cb)` -- the template
-  // ships with none registered.
+  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
+  // GPIO 26). The main loop drains the ring directly into the IKBD
+  // demux via commemul_poll(ikbd_consume_rom3_sample) -- no
+  // command-dispatch middleware. Apps that need a richer command
+  // channel can wrap commemul_poll with their own callback.
   if (commemul_init() < 0) {
     panic("commemul_init failed: PIO/DMA claim or program load returned <0");
   }
-  chandler_init();
 
   // SD card -- best-effort. Apps that need persistent storage can
   // ignore the failure path or treat it as fatal. The folder name is
@@ -93,20 +97,26 @@ void emul_start() {
   select_configure();
 
   // Main loop:
-  //   1. Drain the ROM3 command ring -> dispatch to registered chandler
-  //      callbacks (apps register theirs above via chandler_addCB).
-  //   2. Re-render the cart framebuffer. The m68k VBL loop in userfw.s
-  //      blits this into an ST screen page once per vertical retrace,
-  //      so any change here becomes visible within ~20 ms.
-  //
-  // The 1.2.15 smoke-test version of fb_render_frame redraws the whole
-  // 32 KB framebuffer every tick (clear + text + scrolling marquee).
-  // No tearing handshake yet -- if a m68k blit catches mid-write, the
-  // ST will show half-old / half-new bands and we'll know 1.2.13 is
-  // actually needed.
+  //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
+  //      ring (one PIO sample per IKBD byte the m68k Timer-B handler
+  //      forwarded; the filter inside ikbd_consume_rom3_sample picks
+  //      out the $FB8200..$FB82FF window).
+  //   2. Run the IKBD demux on whatever bytes arrived.
+  //   3. Drain decoded key events via DPRINTF (apps replace this with
+  //      their own consumer).
+  //   4. Re-render the cart framebuffer. The m68k VBL loop in
+  //      userfw.s blits this into an ST screen page once per VBL.
   DPRINTF("Entering main loop\n");
   while (true) {
-    chandler_loop();
+    commemul_poll(ikbd_consume_rom3_sample);
+    ikbd_pump();
+
+    ikbd_key_event_t k;
+    while (ikbd_pop_key(&k)) {
+      DPRINTF("IKBD KEY %s: $%02x\n", k.is_press ? "DOWN" : "UP ",
+              k.scancode);
+    }
+
     fb_render_frame();
   }
 }

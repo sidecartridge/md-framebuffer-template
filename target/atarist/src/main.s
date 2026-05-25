@@ -25,7 +25,7 @@
 
 ROM4_ADDR			equ $FA0000
 
-; Shared 64 KB region layout (must match rp/src/include/chandler.h).
+; Shared 64 KB region layout (must match rp/src/include/cart_shared.h).
 ;
 ;   $FA0000  CARTRIDGE			m68k header + code (max 16 KB)
 ;					Includes the unrolled MOVEM block

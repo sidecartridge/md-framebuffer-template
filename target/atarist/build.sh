@@ -40,7 +40,7 @@ if [ "$make_status" -ne 0 ]; then
 fi
 
 # Cartridge code budget: header + code + fbdrv must fit in 16 KB
-# (CHANDLER_CARTRIDGE_CODE_SIZE in rp/src/include/chandler.h, mirrored as
+# (CART_CARTRIDGE_CODE_SIZE in rp/src/include/cart_shared.h, mirrored as
 # CARTRIDGE_CODE_SIZE in target/atarist/src/main.s). Bumped from 8 KB to
 # 16 KB in Story 1.2.6 to accommodate the unrolled MOVEM block at
 # offset $2000. Enforce here so the build fails fast instead of silently
@@ -59,7 +59,7 @@ else
 fi
 if [ "$boot_size" -gt "$cartridge_max" ]; then
     echo "ERROR: cartridge code is $boot_size bytes; limit is $cartridge_max"
-    echo "       (CHANDLER_CARTRIDGE_CODE_SIZE in chandler.h /"
+    echo "       (CART_CARTRIDGE_CODE_SIZE in cart_shared.h /"
     echo "        CARTRIDGE_CODE_SIZE in main.s)"
     exit 5
 fi
