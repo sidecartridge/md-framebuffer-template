@@ -15,17 +15,10 @@ working_folder=$1
 build_type=$2
 target_firmware="target_firmware.h"
 
-# Generate the unrolled MOVEM block (Story 1.2.6 Q3 Option B). gen_fbdrv.py
-# emits ~7 KB of mechanically-uniform assembly into src/fbdrv.s, which the
-# Makefile then assembles alongside main.s and userfw.s. Regenerating each
-# build keeps the script as the source of truth and avoids committing a
-# huge auto-generated .s file.
-python gen_fbdrv.py > src/fbdrv.s
-gen_status=$?
-if [ "$gen_status" -ne 0 ]; then
-    echo "ERROR: gen_fbdrv.py failed (status $gen_status)"
-    exit $gen_status
-fi
+# (fbdrv.s used to be regenerated here by gen_fbdrv.py before the
+# m68k make. Epic 4 Story 4.7 dropped that step -- src/fbdrv.s is now
+# a hand-written, version-controlled file. The Makefile assembles it
+# alongside main.s and userfw.s like any other source.)
 
 # ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
 # STCMD_NO_TTY=1 keeps docker working when invoked from non-TTY contexts

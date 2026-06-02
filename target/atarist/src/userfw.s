@@ -14,17 +14,10 @@
 ;      unchanged since last iteration (D4), the FB has nothing new
 ;      and we skip the blit + flip entirely.
 ;   3. Copy the 32 KB cart framebuffer ($FA8300) into the hidden
-;      ST screen page selected by A4. The copy path is picked once
-;      at boot by walking the _MCH cookie:
-;        - plain ST (D7=0): jsr fbdrv  -- MOVEM-loop copy.
-;        - STE/MegaSTE/TT/Falcon (D7=1): INLINE blitter in HOG mode.
-;      We do NOT jsr to a cart-ROM blitter subroutine: a previous
-;      iteration of this file lived at $FA3C00 and bombed with
-;      "Illegal Instruction" (4 bombs) on STE -- after HOG completes
-;      and CPU prefetch resumes on the cart bus, RTS fetches garbage.
-;      md-sprites-demo dodges this by running its whole main loop from
-;      ST RAM (start_rom_code is copied there from pre_auto); we dodge
-;      it by keeping the blitter setup inline in userfw.
+;      ST screen page selected by A4. The copy is a pure 68000 CPU
+;      MOVEM burst expanded inline via FBDRV_INLINE -- same code on
+;      plain ST / STE / MegaSTE / TT / Falcon (no _MCH cookie
+;      dispatch, no STE blitter path).
 ;   4. Flip the video base to the screen we just wrote.
 ;   5. Toggle A4 between SCREEN_A and SCREEN_B for the next frame.
 ;   6. Poll CMD_MAGIC_SENTINEL_ADDR ($FA4000). The RP-side IKBD demux
@@ -32,54 +25,29 @@
 ;      match, restore vectors / MFP / VBL / screen base and rts back
 ;      to the cartridge dispatcher.
 ;
-; Epic 3 IKBD ownership: TOS's HBL ($68), Timer-A/C/D
-; ($134/$114/$110), and ACIA ($118) handlers are stubbed to single-
-; rte dummies. Timer-B ($120) is reprogrammed to fire every 10 HBLs
-; (~1500 Hz) into userfw_timerb_ikbd, which drains the ACIA RX buffer
-; and forwards each byte to RP via a single cart-bus read of
-; IKBD_WINDOW_BASE + byte (md-devops single-byte ABI). Story 3.5
-; moved ESC detection to the RP-side demux; the m68k Timer-B handler
-; is now state-free (just forwards bytes).
+; IRQ ownership: TOS's HBL ($68), Timer-A/B/C/D
+; ($134/$120/$114/$110), and ACIA ($118) handlers are stubbed to
+; single-rte dummies and their MFP IERA/IERB bits are cleared so no
+; MFP source can fire. Only the custom VBL handler at $70 stays
+; active.
 ;
-; IKBD window now lives at $FB8200..$FB82FF (ROM3) instead of in
-; ROM4. ROM3 reads are captured by the dedicated commemul PIO+DMA
-; ring with no per-read CPU overhead -- the RP simply polls the ring
-; from the main loop. The earlier ROM4 DMA-IRQ approach lost bytes
-; during fbdrv blits because the IRQ rate (millions/sec from cart
-; reads under blit load) saturated the Cortex-M0+; switching to a
-; dedicated capture buffer eliminated the loss.
+; IKBD bytes are forwarded inline from FBDRV_INLINE. The MOVEM-burst
+; framebuffer copy emits an IKBD poll block every FBDRV_IKBD_POLL_EVERY
+; iters (~20 HBLs / 1.24 ms): btst the ACIA RX-ready bit, and if set,
+; read the byte and emit it via a cart-bus read at IKBD_WINDOW_BASE +
+; byte ($FB8200..$FB82FF, md-devops single-byte ABI). The RP captures
+; the read via the commemul PIO+DMA ring (no per-read CPU overhead)
+; and runs the IKBD demux from its main loop.
 ;
-; Keyboard-only configuration: at boot we send the IKBD reset
-; ($80 $01), wait ~110 ms for the self-test, then $12 (disable
-; mouse) and $1A (disable joysticks). Both mouse and joystick
-; decoding proved unreliable in practice (same byte-loss / demux
-; desync class) and are documented as deferred in
-; docs/epics/epic-99-backlog.md.
-
 ; --- Constants ----------------------------------------------------
 
-; Atari ST shifter / blitter / video base registers.
-BLT_BASE              equ $FFFF8A00
-BLT_SRC_XINC          equ (BLT_BASE + $20)
-BLT_SRC_YINC          equ (BLT_BASE + $22)
-BLT_SRC_ADDR          equ (BLT_BASE + $24)
-BLT_ENDMASK1          equ (BLT_BASE + $28)
-BLT_ENDMASK2          equ (BLT_BASE + $2A)
-BLT_ENDMASK3          equ (BLT_BASE + $2C)
-BLT_DST_XINC          equ (BLT_BASE + $2E)
-BLT_DST_YINC          equ (BLT_BASE + $30)
-BLT_DST_ADDR          equ (BLT_BASE + $32)
-BLT_XCNT              equ (BLT_BASE + $36)
-BLT_YCNT              equ (BLT_BASE + $38)
-BLT_HOP               equ (BLT_BASE + $3A)
-BLT_OP                equ (BLT_BASE + $3B)
-BLT_CTRL              equ (BLT_BASE + $3C)
-BLT_SKEW              equ (BLT_BASE + $3D)
-BLT_HOG_MODE          equ %11000000          ; BUSY | HOG
-
+; Atari ST shifter video base registers (68000-compatible, present
+; on every ST/STE/MegaSTE/TT/Falcon). Only HIGH+MID are written;
+; the STE-only LOW byte at $FFFF820D stays at TOS's default of 0,
+; which matches our 256-byte-aligned hidden screens at $70000 and
+; $78000.
 VIDEO_BASE_ADDR_HIGH  equ $FFFF8201
 VIDEO_BASE_ADDR_MID   equ $FFFF8203
-VIDEO_BASE_ADDR_LOW   equ $FFFF820D          ; STE-only
 
 ; Palette index 0 doubles as the border colour. We poke it at three
 ; points in the VBL loop so the ST border visualises blit timing
@@ -89,15 +57,93 @@ VIDEO_BASE_ADDR_LOW   equ $FFFF820D          ; STE-only
 PALETTE_IDX0          equ $FFFF8240
 BLIT_MARK_VSYNC       equ $000               ; black: vsync returned, copy not yet started
 BLIT_MARK_RUNNING     equ $777               ; white: cart->ST copy in flight
-BLIT_MARK_DONE_ST     equ $070               ; green: ST path done (jsr fbdrv returned)
-BLIT_MARK_DONE_STE    equ $005               ; blue:  STE path done (blitter HOG returned)
+BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 
-; Both halves of _dskbufp ($4C6..$4C9). userfw doesn't do disk I/O so
-; the whole longword is free scratch. The VBL flag claims the low
-; word ($4C6); the SR-save scratch for the STE blitter uses the high
-; word ($4C8). Distinct uses, distinct addresses, no aliasing.
-UFW_VBL_FLAG          equ $4C6               ; cleared by userfw_vbl, polled by main loop
-UFW_DSKBUFP           equ $4C8               ; SR save scratch for STE blitter
+; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
+; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
+; includes A7 in its register list; the current-page pointer
+; UFW_SCREEN_PAGE and the saved TOS VBL vector / Physbase result
+; also live here. 16 bytes used; SCREEN_A's tail at $77D00 has 768
+; bytes available (shifter only reads 200*160 = 32000 B of each
+; screen page, allocation is 32 KB).
+UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
+UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
+UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
+UFW_SP_SAVE           equ $00077FF0          ; longword: SP (A7) shadow during FBDRV_INLINE
+
+; fbdrv iteration arithmetic. Pulled out as equs so the macro body
+; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
+; derived from FB_COPY_LINES (defined further down with the other
+; framebuffer constants); change FB_COPY_LINES in one place to
+; throttle how many ST scanlines the per-VBL copy touches.
+;
+; FBDRV_TOTAL_BYTES must be divisible by FBDRV_ITER_BYTES (48) so
+; the unrolled REPT covers the full byte count without a tail.
+; FB_COPY_LINES * 160 byte rows / 48 byte iters: 150*160/48=500,
+; 200*160/48=666r32. For values that don't divide evenly the trailing
+; bytes are simply not copied (they remain stale on the screen page).
+FBDRV_ITER_BYTES      equ 56                            ; 14 longwords: D0-D7 + A0-A4 + A7 (A6=src, A5=dst). A7 saved/restored around the macro.
+FBDRV_IKBD_POLL_EVERY equ 40                            ; insert inline IKBD poll every Nth MOVEM iter. 40 iters * ~31us = ~1.24ms (~20 HBLs).
+FBDRV_TOTAL_BYTES     equ (FB_COPY_LINES * FB_ROW_BYTES) ; honours FB_COPY_LINES
+FBDRV_MAIN_ITERS      equ (FBDRV_TOTAL_BYTES / FBDRV_ITER_BYTES)
+
+;----------------------------------------------------------------
+; FBDRV_DISP -- compile-time displacement counter used by the
+; FBDRV_INLINE unroll below. Each REPT iteration uses FBDRV_DISP
+; as the 16-bit signed displacement into d16(a5) for that block's
+; store, then increments by FBDRV_ITER_BYTES. The maximum
+; displacement after the last iteration is
+; (FBDRV_MAIN_ITERS - 1) * FBDRV_ITER_BYTES, must be inside the
+; 16-bit signed range (32767).
+FBDRV_DISP            set 0
+
+;----------------------------------------------------------------
+; FBDRV_INLINE -- fully unrolled cart->ST screen framebuffer copy.
+;
+; Each REPT iteration emits:
+;   movem.l (a4)+, d0-d7/a0-a3              ; 4 B, 108 cycles
+;   movem.l d0-d7/a0-a3, FBDRV_DISP(a5)     ; 6 B, 108 cycles
+; FBDRV_DISP is bumped by FBDRV_ITER_BYTES every iteration at
+; assembly time, so the destination is reached via a 16-bit signed
+; displacement instead of a runtime `add.l #N, a5`. (Predec store
+; `movem.l ..., -(a5)` would save 4 cycles + 2 bytes per iter, but
+; needs RP-side c2p to write 48-byte chunks in reverse order to
+; reconstruct the image correctly -- deferred.)
+;
+; Caller protocol (must be set up BEFORE the macro expansion):
+;   A5 = destination ST screen page ($70000 or $78000 in this
+;        template's double-buffer scheme).
+;
+; Clobbers: D0-D7, A0-A3, A4. A5 is NOT modified (the d16
+; displacement varies per iter instead of advancing A5).
+;
+; Code size: 10 B per unrolled iteration * FBDRV_MAIN_ITERS (500)
+; + 6 B setup = ~5 KB inline. Sits comfortably inside userfw's
+; 14 KB cart section budget.
+FBDRV_INLINE          macro
+    movea.l #UFW_FB_SRC, a6
+FBDRV_DISP            set 0
+FBDRV_POLL_CTR        set 0
+    rept    FBDRV_MAIN_ITERS
+    movem.l (a6)+, d0-d7/a0-a4/a7
+    movem.l d0-d7/a0-a4/a7, FBDRV_DISP(a5)
+FBDRV_DISP            set FBDRV_DISP + FBDRV_ITER_BYTES
+FBDRV_POLL_CTR        set FBDRV_POLL_CTR + 1
+    ifeq    FBDRV_POLL_CTR - FBDRV_IKBD_POLL_EVERY
+FBDRV_POLL_CTR        set 0
+    ; Inline IKBD poll. Clobbers D0/A0 -- safe because the next
+    ; MOVEM iter reloads D0-D7/A0-A4 from cart, and the .after_copy
+    ; code after the macro overwrites D0 with UFW_SCREEN_PAGE before
+    ; using it.now even 
+    btst    #0, ACIA_KBD_STATUS.w
+    beq.s   *+18                          ; skip the 16-byte body if no data
+    moveq   #0, d0                        ; pre-zero D0 so move.b yields a clean 0..255 word
+    lea     IKBD_WINDOW_BASE, a0
+    move.b  ACIA_KBD_DATA.w, d0
+    tst.b   (a0, d0.w)                    ; emit byte via cart-bus read
+    endc
+    endr
+                      endm
 
 ; Atari ST VBL interrupt vector. Replacing TOS's handler here drops
 ; mouse / cursor-blink / keyboard-repeat updates -- harmless for the
@@ -129,7 +175,7 @@ UFW_FB_SRC            equ $00FA8300           ; FRAMEBUFFER_ADDR
 ; low-res is 200; copying fewer leaves the bottom band of the
 ; destination ST page untouched (useful for a status row or to bound
 ; the blitter cost).
-FB_COPY_LINES         equ 192
+FB_COPY_LINES         equ 200
 FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
 
 ; --- IKBD ownership (Epic 3 Story 3.1) -----------------------------
@@ -140,13 +186,13 @@ ACIA_KBD_STATUS       equ $FFFFFC00
 ACIA_KBD_DATA         equ $FFFFFC02
 
 ; MC68901 MFP registers (subset we manipulate).
-MFP_IERA              equ $FFFFFA07          ; interrupt enable A (Timer-B = bit 0)
+MFP_IERA              equ $FFFFFA07          ; interrupt enable A (Timer-A = bit 5)
 MFP_IERB              equ $FFFFFA09          ; interrupt enable B
-MFP_ISRA              equ $FFFFFA0F          ; in-service A (Timer-B ack = bit 0)
+MFP_ISRA              equ $FFFFFA0F          ; in-service A (Timer-A ack = bit 5)
 MFP_IMRA              equ $FFFFFA13          ; interrupt mask A
 MFP_IMRB              equ $FFFFFA15          ; interrupt mask B
-MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register
-MFP_TBDR              equ $FFFFFA21          ; Timer-B data register
+MFP_TACR              equ $FFFFFA19          ; Timer-A control register (cleared at boot for safety)
+MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (cleared at boot for safety)
 
 ; IRQ vector slots we take over. $70 (VBL) already handled by the
 ; original userfw code path (D3 holds the save).
@@ -157,30 +203,12 @@ VEC_ACIA              equ $118
 VEC_TIMERB            equ $120
 VEC_TIMERA            equ $134
 
-; Timer-B programming: HBL event-count mode, fires every N HBL events.
-; N=10 matches md-oric (TIMERB_COUNT_SCAN_LINES); ~1500 Hz at 50 Hz / 313 lines.
-TIMERB_HBL_DIVIDER    equ 10
-TIMERB_CTRL_EVENT     equ $08                ; control value: event-count mode
-
-; IKBD cart-bus emit window (Epic 3 W1, ROM3). The Timer-B handler
-; reads (IKBD_WINDOW_BASE + byte).b to forward `byte` to RP; the RP
-; side filters commemul ring samples whose low 16 bits fall in
-; [$8200, $8300) and extracts the IKBD byte from the low 8 bits.
+; IKBD cart-bus emit window (Epic 3 W1, ROM3). The inline IKBD poll
+; in FBDRV_INLINE reads (IKBD_WINDOW_BASE + byte).b to forward `byte`
+; to RP; the RP side filters commemul ring samples whose low 16 bits
+; fall in [$8200, $8300) and extracts the IKBD byte from the low 8
+; bits.
 IKBD_WINDOW_BASE      equ $FB8200
-
-; IKBD commands used at boot.
-IKBD_CMD_RESET_HDR    equ $80    ; reset command header (followed by $01)
-IKBD_CMD_RESET_RUN    equ $01    ; perform reset + self-test
-IKBD_CMD_MOUSE_OFF    equ $12    ; disable mouse reporting
-IKBD_CMD_JOY_OFF      equ $1A    ; disable joysticks
-
-; IKBD self-test takes ~100 ms. Wait counter is iterations of a
-; (subq.l + bne.s) inner loop, ~18 cycles each at 8 MHz m68k =>
-; ~50000 iterations covers ~110 ms with margin. During the wait the
-; Timer-B handler runs normally and drains the eventual $F1 reset
-; ack into the RP demux (where it currently appears as a ghost
-; "release of $71" -- harmless, no app cares).
-IKBD_RESET_WAIT_ITERS equ 50000
 
 ; Save area for vectors + MFP regs we'll restore on ESC exit. Lives
 ; in the top 32 bytes of the 4 KB copied-code area below ST screen
@@ -211,52 +239,21 @@ userfw:
     move.w  #2, -(sp)                ; XBIOS Physbase
     trap    #14
     addq.l  #2, sp
-    move.l  d0, d6                   ; D6 = saved screen base
+    move.l  d0, UFW_PHYSBASE_SAVE    ; saved screen base lives in RAM now
 
     ; Save TOS's VBL vector and install ours. We're in supervisor mode
     ; (entered via CA_INIT) so writing $70.w is legal.
-    ;
-    ; userfw_vbl's absolute address must be computed PC-relative: vlink
-    ; resolves bare `#userfw_vbl` against the output-binary offset
-    ; ($093C) instead of the runtime cart address ($FA093C), because the
-    ; linker script places .text_userfw at file offset $0800, not at
-    ; absolute $FA0800. `lea label(pc), An` gives the runtime address
-    ; at execution time, regardless of where the code lives in cart.
-    move.l  VBL_VECTOR.w, d3         ; D3 = saved TOS VBL vector
+    move.l  VBL_VECTOR.w, UFW_VBL_VEC_SAVE   ; TOS VBL vector saved in RAM
     lea     userfw_vbl(pc), a0
     move.l  a0, VBL_VECTOR.w
 
-    ; D4 = last seen FB frame counter. Init to -1 so the first
-    ; iteration always blits (counter starts at 0 from fb_init).
-    moveq   #-1, d4
-
-    ; Walk the cookie jar for _MCH. D7 = 0 on plain ST, 1 on STE-class.
-    moveq   #0, d7
-    move.l  $5A0.w, d1
-    beq.s   .mch_done
-    movea.l d1, a0
-.mch_loop:
-    move.l  (a0)+, d1
-    beq.s   .mch_done
-    cmp.l   #'_MCH', d1
-    beq.s   .mch_found
-    addq.w  #4, a0
-    bra.s   .mch_loop
-.mch_found:
-    move.l  (a0), d1
-    swap    d1                       ; high word into low half
-    tst.w   d1
-    beq.s   .mch_done                ; high word == 0 => plain ST
-    moveq   #1, d7
-.mch_done:
-
     ; --- IKBD ownership setup (Epic 3 Story 3.1) ------------------
     ;
-    ; A5 = save area pointer (physbase - 32). Stays valid for the
-    ; whole userfw run; fbdrv preserves A5 per its calling contract
-    ; (clobbers D0-D7, A3, A4 only), the STE blitter and
-    ; set_video_base don't touch address registers above A4.
-    movea.l d6, a5
+    ; A5 = save area pointer (physbase - 32). Used at boot to save
+    ; the 6 IRQ vectors + MFP IER/IMR; ESC exit recomputes A5 from
+    ; UFW_PHYSBASE_SAVE before reading the save area, so A5 doesn't
+    ; need to survive the per-VBL FBDRV_INLINE expansion.
+    movea.l UFW_PHYSBASE_SAVE, a5
     lea     -UFW_SAVE_SIZE(a5), a5
 
     ; The command sentinel at CMD_MAGIC_SENTINEL is RP-owned (m68k
@@ -268,7 +265,8 @@ userfw:
     move.w  sr, -(sp)
     ori.w   #$0700, sr
 
-    ; Save the 6 vectors we're about to overwrite ($70 already in D3).
+    ; Save the 6 vectors we're about to overwrite ($70 already saved
+    ; to UFW_VBL_VEC_SAVE above).
     move.l  VEC_HBL.w, 0(a5)
     move.l  VEC_TIMERD.w, 4(a5)
     move.l  VEC_TIMERC.w, 8(a5)
@@ -282,167 +280,105 @@ userfw:
     move.b  MFP_IMRA.w, 26(a5)
     move.b  MFP_IMRB.w, 27(a5)
 
-    ; Install dummies at HBL / Timer-A / Timer-C / Timer-D / ACIA.
-    ; userfw_dummy_irq is a single rte; PC-relative for the same
-    ; runtime-vs-link-address reason userfw_vbl uses lea(pc).
+    ; Install dummies at HBL / Timer-A / Timer-B / Timer-C / Timer-D
+    ; / ACIA. userfw_dummy_irq is a single rte; PC-relative for the
+    ; same runtime-vs-link-address reason userfw_vbl uses lea(pc).
+    ; With IERA/IERB cleared below no MFP source actually fires, but
+    ; the dummies cover the boot window between vector install and
+    ; the IERA/IERB clears.
     lea     userfw_dummy_irq(pc), a0
     move.l  a0, VEC_HBL.w
     move.l  a0, VEC_TIMERD.w
     move.l  a0, VEC_TIMERC.w
     move.l  a0, VEC_ACIA.w
+    move.l  a0, VEC_TIMERB.w
     move.l  a0, VEC_TIMERA.w
 
-    ; Install the IKBD Timer-B poll handler.
-    lea     userfw_timerb_ikbd(pc), a0
-    move.l  a0, VEC_TIMERB.w
-
-    ; Stop Timer-B before reprogramming (kills any prior TOS event).
+    ; Stop both timers (kills any prior TOS event).
     clr.b   MFP_TBCR.w
+    clr.b   MFP_TACR.w
 
-    ; Disable + mask everything in MFP A/B, then re-enable Timer-B
-    ; only. This matches md-oric main.s:217-220 -- wholesale wipe is
-    ; simpler than picking bits, and we restore the originals on exit.
+    ; Disable + mask everything in MFP A/B. No MFP IRQ ever fires
+    ; under userfw -- only the VBL ($70) at IPL 4 reaches the m68k.
     clr.b   MFP_IERA.w
     clr.b   MFP_IERB.w
     clr.b   MFP_IMRA.w
     clr.b   MFP_IMRB.w
-    bset    #0, MFP_IERA.w
-    bset    #0, MFP_IMRA.w
 
-    ; Program Timer-B: fire every TIMERB_HBL_DIVIDER HBL events.
-    move.b  #TIMERB_HBL_DIVIDER, MFP_TBDR.w
-    move.b  #TIMERB_CTRL_EVENT, MFP_TBCR.w
-
-    ; Drain any stale byte sitting in the ACIA RX buffer (something
-    ; the user typed before we took over). Done with IRQs masked so
-    ; Timer-B isn't racing us for the same byte.
-.ikbd_predrain:
-    btst    #0, ACIA_KBD_STATUS.w
-    beq.s   .ikbd_predrain_done
-    move.b  ACIA_KBD_DATA.w, d0            ; discard
-    bra.s   .ikbd_predrain
-.ikbd_predrain_done:
-
-    ; Interrupts back on (caller's level, typically $2300). From here
-    ; the Timer-B handler is live and any IKBD byte (including the
-    ; $F1 reset ack that follows the $80 $01 we're about to send)
-    ; flows through to the RP demux.
+    ; Interrupts back on (caller's level, typically $2300).
     move.w  (sp)+, sr
 
-    ; --- IKBD configuration --------------------------------------
-    ; Reset the IKBD, wait for self-test, then disable mouse and
-    ; joysticks. The byte stream becomes pure scancodes.
-    move.b  #IKBD_CMD_RESET_HDR, d0
-    bsr.s   .ikbd_tx_byte
-    move.b  #IKBD_CMD_RESET_RUN, d0
-    bsr.s   .ikbd_tx_byte
+    ; Initialise the hidden-page pointer. UFW_SCREEN_PAGE holds the
+    ; page currently being drawn into; .after_copy toggles it between
+    ; UFW_SCREEN_A and UFW_SCREEN_B via XOR with UFW_SCREEN_XOR.
+    move.l  #UFW_SCREEN_A, UFW_SCREEN_PAGE
 
-    ; Busy-wait for the IKBD self-test to finish (~100 ms). The
-    ; Timer-B handler keeps running underneath us, draining the ACIA
-    ; into the RP-side demux as bytes arrive (the $F1 reset ack and
-    ; any pre-disable mouse/joy noise).
-    move.l  #IKBD_RESET_WAIT_ITERS, d0
-.ikbd_reset_wait:
-    subq.l  #1, d0
-    bne.s   .ikbd_reset_wait
+    ; Shifter base HIGH byte ($07) is the same for both screen pages
+    ; ($70000 and $78000), so we write it ONCE here and only update
+    ; the MID byte per VBL in .after_copy below (saves ~20 cyc/VBL).
+    move.b  #(UFW_SCREEN_A >> 16), VIDEO_BASE_ADDR_HIGH.w
 
-    ; Disable mouse and joystick reporting.
-    move.b  #IKBD_CMD_MOUSE_OFF, d0
-    bsr.s   .ikbd_tx_byte
-    move.b  #IKBD_CMD_JOY_OFF, d0
-    bsr.s   .ikbd_tx_byte
-
-    bra.s   .ikbd_cfg_done
-
-.ikbd_tx_byte:
-    ; In:  D0.B = byte to send to IKBD
-    ; Spins until ACIA TX-empty (status bit 1) then writes data.
-    btst    #1, ACIA_KBD_STATUS.w
-    beq.s   .ikbd_tx_byte
-    move.b  d0, ACIA_KBD_DATA.w
-    rts
-
-.ikbd_cfg_done:
-
-    ; A4 = hidden screen (the one the next blit writes to).
-    movea.l #UFW_SCREEN_A, a4
+    ; Pin IRQ state for the duration of .vbl_loop:
+    ;   - MFP IERA/IERB cleared: no MFP source (Timer-A/B/C/D, HBL,
+    ;     ACIA, etc.) can generate an interrupt request. Boot above
+    ;     already cleared these; reasserting here is a belt-and-
+    ;     suspenders guarantee.
+    ;   - SR = $2300: supervisor mode, IPL=3. Blocks levels 1-3 (HBL
+    ;     at IPL 2), allows VBL at IPL 4 and MFP at IPL 6. MFP can't
+    ;     fire anyway since IERA/IERB are 0, so in practice only the
+    ;     VBL ($70) IRQ reaches the m68k.
+    move.b  #0, MFP_IERA.w
+    move.b  #0, MFP_IERB.w
+    move.w  #$2300, sr
 
     ; --- Per-VBL loop ---
 .vbl_loop:
-    ; Custom VBL wait: set flag = -1 then spin until userfw_vbl
-    ; clears it. Cheaper than XBIOS Vsync (no trap dispatch through
-    ; TOS) and gives deterministic loop entry timing.
-    move.w  #-1, UFW_VBL_FLAG.w
-.wait_vbl:
-    tst.w   UFW_VBL_FLAG.w
-    bne.s   .wait_vbl
+    ; CPU-halt wait for the next vsync. `stop #$2300` loads SR with
+    ; #$2300 (supervisor, IPL=3) and halts the m68k until an IRQ at
+    ; level > 3 arrives. MFP IERA/IERB are all 0 so the only IRQ
+    ; that can fire is the VBL at IPL=4 -- when it does, userfw_vbl
+    ; runs and RTEs to the instruction below. No spin, no memory
+    ; traffic on the bus while we wait.
+    stop    #$2300
 
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
 
-    ; Skip the entire copy + flip if the RP hasn't published a new
-    ; frame since our last iteration. This both prevents tearing
-    ; (counter only increments after RP's writes commit) and saves
-    ; ~4-10 ms / VBL when the FB is idle.
-    move.l  FB_FRAME_COUNTER, d0
-    cmp.l   d4, d0
-    beq     .input_check
-    move.l  d0, d4
+    ; A5 = the screen page we are about to fill (loaded from the
+    ; RAM-resident UFW_SCREEN_PAGE). FBDRV_INLINE uses A5 as a
+    ; dst-pointer base with d16 displacements.
+    movea.l UFW_SCREEN_PAGE, a5
 
-    ; A3 = the screen page we are about to fill.
-    movea.l a4, a3
-
-    tst.w   d7
-    beq.s   .copy_st
-    bra     .copy_ste
-
-.copy_st:
-    ; Plain ST: jsr the MOVEM-loop fbdrv. fbdrv clobbers D0-D7, A3, A4.
-    movem.l d6/a4, -(sp)
-    move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w  ; border = black (blit in flight)
-    jsr     $00FA2000                 ; fbdrv (cart $FA2000)
-    move.w  #BLIT_MARK_DONE_ST, PALETTE_IDX0.w  ; border = green (ST path done)
-    movem.l (sp)+, d6/a4
-    bra.s   .after_copy
-
-.copy_ste:
-    ; STE/MegaSTE/TT/Falcon: inline blitter copy. Mirrors the working
-    ; pattern from md-sprites-demo verbatim (incl. the privileged SR
-    ; mask -- pre_auto enters in supervisor mode so this is fine).
-    ; Do NOT factor this out into a cart-ROM subroutine: see the filetarge
-    ; header for the "4 bombs after RTS" gotcha.
-    move.w  sr, UFW_DSKBUFP.w
-    ori.w   #$0700, sr                ; mask interrupts
-
-    move.w  #2, BLT_SRC_XINC.w
-    move.w  #2, BLT_DST_XINC.w
-    clr.w   BLT_SRC_YINC.w
-    clr.w   BLT_DST_YINC.w
-    move.w  #$FFFF, BLT_ENDMASK1.w
-    move.w  #$FFFF, BLT_ENDMASK2.w
-    move.w  #$FFFF, BLT_ENDMASK3.w
-    clr.b   BLT_SKEW.w
-    move.w  #((FB_COPY_LINES * FB_ROW_BYTES) / 2), BLT_XCNT.w
-    move.w  #1, BLT_YCNT.w
-    move.b  #$2, BLT_HOP.w
-    move.b  #$3, BLT_OP.w
-    move.l  #UFW_FB_SRC, BLT_SRC_ADDR
-    move.l  a3, BLT_DST_ADDR.w
-    move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w  ; border = black (blit in flight)
-    move.b  #BLT_HOG_MODE, BLT_CTRL.w ; kick off; CPU stalls until done
-    move.w  #BLIT_MARK_DONE_STE, PALETTE_IDX0.w ; border = blue (STE path done)
-
-    move.w  UFW_DSKBUFP.w, sr         ; restore SR
+    ; Pure 68000 CPU copy via the FBDRV_INLINE macro (defined in
+    ; the constants block). Same code path on plain ST / STE /
+    ; MegaSTE / TT / Falcon -- no _MCH cookie dispatch, no STE
+    ; blitter.
+    ;
+    ; FBDRV_INLINE clobbers D0-D7, A0-A4, A6, A7. A7 (SP) is saved to
+    ; UFW_SP_SAVE and restored around the macro -- a VBL firing with
+    ; a corrupted A7 would push to a garbage SP and crash. A6 is the
+    ; macro's own src pointer (overwritten at macro entry) so no save
+    ; is needed. D0-D7 / A0-A4 are scratch and not consumed after.
+    move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w  ; border = white (blit in flight)
+    move.l  a7, UFW_SP_SAVE
+    FBDRV_INLINE                      ; inline cart->ST screen copy
+    movea.l UFW_SP_SAVE, a7
+    move.w  #BLIT_MARK_DONE, PALETTE_IDX0.w     ; border = green (copy done)
 
 .after_copy:
 
-    ; Flip the video base to the just-written page.
-    move.l  a4, d0
-    bsr     set_video_base
+    ; Flip the video base to the just-written page. A5 still holds
+    ; UFW_SCREEN_PAGE (preserved by FBDRV_INLINE). Only the MID byte
+    ; of the screen base differs between the two pages -- HIGH was
+    ; written once at boot (constant $07 for both $70000 / $78000).
+    move.l  a5, d0
+    move.l  d0, d1
+    lsr.w   #8, d1
+    move.b  d1, VIDEO_BASE_ADDR_MID.w
 
-    ; Toggle A4 between SCREEN_A and SCREEN_B for the next frame.
-    move.l  a4, d0
+    ; Toggle UFW_SCREEN_PAGE between SCREEN_A and SCREEN_B for the
+    ; next frame.
     eor.l   #UFW_SCREEN_XOR, d0
-    movea.l d0, a4
+    move.l  d0, UFW_SCREEN_PAGE
 
 .input_check:
     ; ESC detection (Story 3.5): the RP-side IKBD demux writes
@@ -457,13 +393,14 @@ userfw:
     ; Mask interrupts before touching MFP / vectors.
     ori.w   #$0700, sr
 
-    ; Recompute the save-area pointer from D6 (saved physbase) in
+    ; Recompute the save-area pointer from UFW_PHYSBASE_SAVE in
     ; case anything clobbered A5 during the run.
-    movea.l d6, a5
+    movea.l UFW_PHYSBASE_SAVE, a5
     lea     -UFW_SAVE_SIZE(a5), a5
 
-    ; Stop Timer-B so no IRQ can fire mid-restore.
+    ; Stop both timers so no IRQ can fire mid-restore.
     clr.b   MFP_TBCR.w
+    clr.b   MFP_TACR.w
 
     ; Restore MFP IER / IMR.
     move.b  24(a5), MFP_IERA.w
@@ -479,8 +416,8 @@ userfw:
     move.l  16(a5), VEC_TIMERB.w
     move.l  20(a5), VEC_TIMERA.w
 
-    ; Restore TOS's VBL vector ($70 save in D3).
-    move.l  d3, VBL_VECTOR.w
+    ; Restore TOS's VBL vector ($70 save from UFW_VBL_VEC_SAVE).
+    move.l  UFW_VBL_VEC_SAVE, VBL_VECTOR.w
 
     ; Restore SR to TOS's usual IPL=3 (matches md-oric main.s:230).
     ; From here on TOS handles HBL / Timer / ACIA again -- IKBD will
@@ -489,25 +426,24 @@ userfw:
 
     ; Restore screen base via XBIOS Setscreen.
     move.w  #-1, -(sp)                ; no rez change
-    move.l  d6, -(sp)                 ; physical screen
-    move.l  d6, -(sp)                 ; logical screen
+    move.l  UFW_PHYSBASE_SAVE, -(sp)  ; physical screen
+    move.l  UFW_PHYSBASE_SAVE, -(sp)  ; logical screen
     move.w  #5, -(sp)                 ; XBIOS Setscreen
     trap    #14
     lea     12(sp), sp
     rts
 
 ; -------------------------------------------------------------------
-; userfw_vbl -- minimal VBL interrupt handler. Just clears the flag
-; the main loop is polling on, then RTEs. Uses zero registers, zero
-; stack beyond the SR+PC that the m68k pushed on IRQ entry.
+; userfw_vbl -- minimal VBL interrupt handler. Just RTEs (wakes the
+; m68k from the `stop #$2300` in .vbl_loop). Uses zero registers,
+; zero stack beyond the SR+PC that the m68k pushed on IRQ entry.
 ;
 ; This replaces TOS's VBL handler entirely while userfw is running,
 ; so mouse / cursor-blink / keyboard-repeat / _vblqueue all stop
-; firing. Epic 3 Story 3.1 also stubs the ACIA IRQ ($118), so
-; GEMDOS's keyboard buffer is no longer filled either; ESC detection
-; runs through userfw_timerb_ikbd's direct ACIA poll instead.
+; firing. The ACIA IRQ ($118) is stubbed too, so GEMDOS's keyboard
+; buffer is no longer filled; ESC detection runs through the inline
+; IKBD poll in FBDRV_INLINE.
 userfw_vbl:
-    clr.w   UFW_VBL_FLAG.w
     rte
 
 ; -------------------------------------------------------------------
@@ -518,63 +454,3 @@ userfw_vbl:
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:
     rte
-
-; -------------------------------------------------------------------
-; userfw_timerb_ikbd -- Timer-B IRQ handler (vector $120).
-;
-; Triggered every TIMERB_HBL_DIVIDER (=10) horizontal-blank events,
-; ~1500 Hz at 50/60 Hz vertical refresh. Drains the IKBD ACIA's
-; 1-byte RX buffer, forwarding each received byte to RP via a single
-; cart-bus read of `IKBD_WINDOW_BASE + byte` (md-devops single-byte
-; ABI, Epic 3 W1).
-;
-; The drain loop reads until the ACIA RX-ready bit clears -- a burst
-; (key + mouse + joystick in the same 10-HBL window) can deposit
-; multiple bytes before our next Timer-B fire, and the ACIA has only
-; a 1-byte buffer.
-;
-; Story 3.5: handler is state-free. The RP-side IKBD demux owns ESC
-; detection and packet framing; we just forward bytes.
-;
-; Single byte per fire (md-oric pattern), NOT a drain loop: the
-; MC6850 ACIA's RX-ready status bit clears on data-register read but
-; needs ~2 us (one E-clock period at 500 kHz) before the change is
-; observable. A tight drain loop reads status faster than the ACIA
-; can clear it, sees the bit still set, re-reads the same byte, and
-; emits duplicates -- which desyncs the RP-side packet demux.
-;
-; At 1500 Hz Timer-B fire and 780 bytes/sec IKBD max serial rate,
-; one-byte-per-fire has ~2x headroom: bytes can't physically arrive
-; faster than Timer-B fires, so we never miss a byte.
-userfw_timerb_ikbd:
-    btst    #0, ACIA_KBD_STATUS.w          ; RX byte available?
-    beq.s   .no_data
-    movem.l d0/a0, -(sp)
-    lea     IKBD_WINDOW_BASE, a0
-    move.b  ACIA_KBD_DATA.w, d0            ; read it (clears status bit)
-    and.w   #$FF, d0
-    tst.b   (a0, d0.w)                     ; emit byte via cart-bus read
-    movem.l (sp)+, d0/a0
-.no_data:
-    bclr    #0, MFP_ISRA.w                 ; ack Timer-B in-service bit
-    rte
-
-; -------------------------------------------------------------------
-; set_video_base -- write D0.L into the shifter screen-base registers.
-;
-; In:  D0.L = screen base address (must be even-byte aligned).
-;      D7.W = 0 -> ST (writes HIGH+MID only),
-;             nonzero -> STE/MegaSTE/TT/Falcon (also writes LOW byte).
-; Out: D1 clobbered. D0, D7, A4 preserved.
-set_video_base:
-    move.l  d0, d1
-    swap    d1
-    move.b  d1, VIDEO_BASE_ADDR_HIGH.w
-    move.l  d0, d1
-    lsr.w   #8, d1
-    move.b  d1, VIDEO_BASE_ADDR_MID.w
-    tst.w   d7
-    beq.s   .svb_done
-    move.b  d0, VIDEO_BASE_ADDR_LOW.w
-.svb_done:
-    rts

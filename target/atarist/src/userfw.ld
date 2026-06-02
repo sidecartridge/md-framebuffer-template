@@ -10,15 +10,21 @@
  * script asserts this against BOOT.BIN):
  *
  *   .text_main      0x0000..0x07FF  ( 2 KB)  m68k boot + dispatch
- *   .text_userfw    0x0800..0x1FFF  ( 6 KB)  user firmware module
- *   .text_fbdrv     0x2000..0x3FFF  (~8 KB)  MOVEM-loop cart->ST screen
+ *   .text_userfw    0x0800..0x3FFF  (14 KB)  user firmware module
+ *                                            (includes the inlined
+ *                                            cart->ST framebuffer
+ *                                            copy via FBDRV_INLINE)
  *
- * STE/blitter note: the STE/MegaSTE/TT/Falcon blitter copy is inlined
- * inside userfw.s, not a separate cart-ROM subroutine. A cart-ROM
- * helper that programs the blitter and then RTSes bombs the m68k with
- * "Illegal Instruction" (4 bombs) -- after HOG-mode completion, CPU
- * prefetch resumes on the cart bus mid-PIO-transition and fetches
- * garbage. Keep the blitter inline.
+ * fbdrv note: previously there was a third section .text_fbdrv at
+ * offset 0x2000 holding a standalone MOVEM-loop copy routine that
+ * .copy_st jsr'd into. The jsr was isolated as the source of a
+ * cart-bus instability (Epic 4 Story 4.7 follow-up), so the routine
+ * was inlined as a macro (FBDRV_INLINE) in userfw.s and the section
+ * was removed. userfw's budget grew from 6 KB to 14 KB to absorb it.
+ *
+ * The template is now a pure 68000 CPU copy: no STE blitter path,
+ * no _MCH dispatch -- same FBDRV_INLINE runs identically on plain
+ * ST / STE / MegaSTE / TT / Falcon.
  *
  * Adding a new module is a two-step change:
  *   1. Pick an offset within the remaining cartridge budget and add a
@@ -34,9 +40,5 @@ SECTIONS
 
     .text_userfw 0x000800 : {
         userfw.o(.text)
-    }
-
-    .text_fbdrv 0x002000 : {
-        fbdrv.o(.text)
     }
 }

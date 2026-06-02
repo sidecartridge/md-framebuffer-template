@@ -41,17 +41,22 @@
  *                                        the cart->ST blit when this
  *                                        is unchanged since the
  *                                        previous iteration)
- *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots)
+ *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots,
+ *                                        app-free).
  *   $FA4100  APP_FREE           ~16.5 KB free arena, ends at FRAMEBUFFER
  *   $FA8300  FRAMEBUFFER          32 KB (320x200 4 bpp low-res)
  *   $FAFFFF  end of region
  */
-#define CART_CARTRIDGE_CODE_SIZE      0x4000  /* 16 KB cart-image budget */
-#define CART_SHARED_BLOCK_OFFSET      CART_CARTRIDGE_CODE_SIZE
-#define CART_CMD_SENTINEL_OFFSET      CART_SHARED_BLOCK_OFFSET
-#define CART_FB_FRAME_COUNTER_OFFSET  (CART_SHARED_BLOCK_OFFSET + 0x0C)
-#define CART_SHARED_VARIABLES_OFFSET  (CART_SHARED_BLOCK_OFFSET + 0x10)
-#define CART_SHARED_VARIABLES_SLOTS   60      /* 240 bytes total */
+#define CART_CARTRIDGE_CODE_SIZE         0x4000  /* 16 KB cart-image budget */
+#define CART_SHARED_BLOCK_OFFSET         CART_CARTRIDGE_CODE_SIZE
+#define CART_CMD_SENTINEL_OFFSET         CART_SHARED_BLOCK_OFFSET
+#define CART_FB_FRAME_COUNTER_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x0C)
+#define CART_SHARED_VARIABLES_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x10)
+#define CART_SHARED_VARIABLES_SLOTS      60      /* 240 bytes total */
+
+/* APP_FREE arena starts directly after SHARED_VARIABLES; the audio
+ * pipeline (Epic 4) was removed and its 1 KB was rolled back into
+ * the free arena. */
 #define CART_APP_FREE_OFFSET                                                  \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 

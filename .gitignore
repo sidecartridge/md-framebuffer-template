@@ -61,4 +61,5 @@ dist/
 .cache/
 .claude/
 docs/epics/
-target/atarist/src/fbdrv.s
+__pycache__/
+*.pyc

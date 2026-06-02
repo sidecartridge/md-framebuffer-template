@@ -31,10 +31,10 @@ ROM4_ADDR			equ $FA0000
 ;					Includes the unrolled MOVEM block
 ;					(fbdrv.s) at offset $2000.
 ;   $FA4000  CMD_MAGIC_SENTINEL_ADDR	4 B
-;   $FA4004  RANDOM_TOKEN_ADDR		4 B
-;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B
-;   $FA400C  reserved			4 B
-;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots)
+;   $FA4004  RANDOM_TOKEN_ADDR		4 B  (legacy / unused since Epic 3.8)
+;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since Epic 3.8)
+;   $FA400C  FB_FRAME_COUNTER_ADDR	4 B
+;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots, app-free).
 ;   $FA4100  APP_FREE_ADDR	      ~16.5 KB free arena, ends at FRAMEBUFFER
 ;   $FA8300  FRAMEBUFFER_ADDR	      32000 B (320x200 4bpp, flush at top)
 ;   $FAFFFF  end of region
@@ -45,6 +45,9 @@ CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA4000
 
 FRAMEBUFFER_SIZE	equ 32000	; 320x200 low-res (4bpp) framebuffer
 FRAMEBUFFER_ADDR	equ (ROM4_ADDR + $10000 - FRAMEBUFFER_SIZE)	; $FA8300
+
+; APP_FREE starts directly after SHARED_VARIABLES; the former audio
+; buffers (1 KB) have been removed and rolled into APP_FREE.
 APP_FREE_ADDR		equ (SHARED_BLOCK_ADDR + $100)			; $FA4100
 FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
 
@@ -90,7 +93,7 @@ RANDOM_TOKEN_POST_WAIT:   equ $1                             ; Wait cycles after
 COMMAND_TIMEOUT           equ $0000FFFF                      ; Timeout for the command
 COMMAND_WRITE_TIMEOUT     equ COMMAND_TIMEOUT                ; Timeout for write commands
 
-SHARED_VARIABLES:         equ (FB_FRAME_COUNTER_ADDR + 4)    ; $FA4010 (60 indexed 4-byte slots)
+SHARED_VARIABLES:         equ (FB_FRAME_COUNTER_ADDR + 4)    ; $FA4010 (60 indexed 4-byte slots, app-free)
 
 ROMCMD_START_ADDR:        equ $FB0000					  ; We are going to use ROM3 address
 CMD_MAGIC_NUMBER    	  equ ($ABCD) 					  ; Magic number header to identify a command

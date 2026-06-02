@@ -49,7 +49,7 @@
 
 // Frequency constants.
 #define SAMPLE_DIV_FREQ (1.f)         // Sample frequency division factor.
-#define RP2040_CLOCK_FREQ_KHZ 260000  // Clock frequency in KHz (260MHz).
+#define RP2040_CLOCK_FREQ_KHZ 225000  // Clock frequency in KHz (225MHz).
 
 // Voltage constants.
 #define RP2040_VOLTAGE VREG_VOLTAGE_1_10  // Voltage in 1.10 Volts.
@@ -61,7 +61,7 @@
                    "NOT VALID", "NOT VALID", "NOT VALID", "NOT VALID", \
                    "NOT VALID"}
 
-// This is the APP KEY that will be used to identify the current app
+// This is the APP KEY that will be used to identify the current app   
 // It mmust be a unique UUID4 for each app, and must be the one used in the
 // app.json file as descriptor of the app
 #ifndef CURRENT_APP_UUID_KEY
