@@ -1,28 +1,77 @@
 /**
  * File: audio.h
- * Description: Cart-shared audio buffer producer (single-channel
- *              YM2149 ch A 4-bit DAC).
+ * Description: Cart-shared audio buffer producer + app-facing API.
  *
- * The m68k Timer-B IRQ handler (target/atarist/src/userfw.s) fires
- * at ~6.27 kHz and reads one byte per fire from a 256-byte cart
- * buffer at CART_AUDIO_BUFFER_OFFSET. Each byte is a YM volume
- * nibble (0..15) in its low 4 bits.
+ * The m68k Timer-B IRQ (target/atarist/src/userfw.s) reads sample
+ * bytes from a 1024-byte cart buffer at CART_AUDIO_BUFFER_OFFSET
+ * and writes them to YM2149 volume registers. The RP refills the
+ * "fresh" prefix of the buffer once per VBL via audio_render_frame()
+ * (paced to ~50 Hz via time_us_32).
  *
- * RP side: audio_init() builds a logarithmic LUT mapping linear
- * 8-bit PCM (0..255) to the closest-matching YM volume nibble.
- * audio_render_frame() generates samples (currently a simple sine)
- * and writes them through the LUT into the cart buffer.
+ * Apps install audio content one of two ways:
+ *
+ *   1. audio_play_loop(data, bytes) -- convenience wrapper. The
+ *      library installs a built-in callback that loops the given
+ *      static buffer indefinitely. Typical use case for a baked-in
+ *      jingle or sound effect.
+ *
+ *   2. audio_set_fill_callback(cb) -- low-level. The library
+ *      invokes `cb(buf, bytes)` once per VBL refill with
+ *      `bytes` set to the m68k's per-VBL consumption rate; the
+ *      callback writes exactly that many bytes into `buf`. Use for
+ *      streaming sources (e.g. SD-backed PCM in Story 4.4).
+ *
+ * Sample format is whatever the m68k Timer-B handler expects --
+ * the default handler in userfw.s reads 2 bytes per sample
+ * (vA, vB) in dual-channel Ghostbusters-LUT mode. The library is
+ * format-agnostic; it just copies bytes into the cart buffer.
+ *
+ * If no callback is installed, audio_render_frame() is a no-op and
+ * the cart buffer stays whatever audio_init() left it (zero =
+ * silence). Calling audio_set_fill_callback(NULL) re-enters this
+ * silent state.
  */
 
 #ifndef AUDIO_H_INCLUDED
 #define AUDIO_H_INCLUDED
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/* Per-VBL fill callback. The library invokes this from
+ * audio_render_frame() with `buf` pointing into the cart audio
+ * buffer and `bytes` set to the m68k's per-VBL consumption rate
+ * (currently 224 = 112 samples * 2 B/sample at Timer-B 5,585 Hz).
+ * The callback must write exactly that many bytes; the library
+ * does not zero on entry.
+ *
+ * Called from the main loop at ~50 Hz; must not block. */
+typedef void (*audio_fill_cb_t)(uint8_t *buf, uint32_t bytes);
+
+/* Initialise the cart audio buffer pointer; clear any previously
+ * installed callback. Call once during boot. */
 void audio_init(void);
+
+/* Drain the per-VBL pacing timer and (if a callback is installed)
+ * invoke it to refill the cart buffer. Call once per main-loop
+ * iteration; the internal time_us_32 pacing throttles to ~50 Hz. */
 void audio_render_frame(void);
+
+/* Install (or clear, if cb == NULL) the fill callback. */
+void audio_set_fill_callback(audio_fill_cb_t cb);
+
+/* Convenience: register a built-in callback that loops a static
+ * byte buffer indefinitely. `data` must remain live for as long
+ * as playback continues (typically a `static const uint8_t[]`
+ * baked into the firmware -- e.g. audio_sample_data[] generated
+ * by tools/wav_to_ym4.py). `bytes` is the total length of one
+ * loop iteration; playback wraps at byte `bytes-1` back to byte 0.
+ *
+ * Replaces any previously installed callback. */
+void audio_play_loop(const uint8_t *data, uint32_t bytes);
 
 #ifdef __cplusplus
 }

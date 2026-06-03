@@ -21,6 +21,7 @@
 
 #include "aconfig.h"
 #include "audio.h"
+#include "audio_sample.h"
 #include "commemul.h"
 #include "debug.h"
 #include "fb.h"
@@ -73,10 +74,16 @@ void emul_start() {
     panic("fb_init failed");
   }
 
-  // Build the PCM-to-YM logarithmic LUT and start producing samples
-  // into the cart audio buffer at $FA4100. The m68k Timer-B IRQ in
-  // userfw.s reads from there at ~6.27 kHz.
+  // Initialise the cart audio buffer producer (see audio.h). The
+  // m68k Timer-B IRQ in userfw.s consumes the buffer at ~5,585 Hz
+  // (2 B/sample dual-channel mode). audio_init() leaves the buffer
+  // silent until a callback is installed; the template demo plays
+  // the embedded Ghostbusters G1 jingle on loop via
+  // audio_play_loop(). Apps replace this with their own
+  // audio_play_loop / audio_set_fill_callback as needed.
   audio_init();
+  audio_play_loop(audio_sample_data,
+                  (uint32_t)sizeof(audio_sample_data));
 
   // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
   // GPIO 26). The main loop drains the ring directly into the IKBD
