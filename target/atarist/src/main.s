@@ -50,11 +50,11 @@ FRAMEBUFFER_ADDR	equ (ROM4_ADDR + $10000 - FRAMEBUFFER_SIZE)	; $FA8300
 ; byte per sample. Read sequentially by the m68k Timer-B IRQ handler
 ; in userfw.s; filled by RP-side audio.c with log-LUT-mapped samples.
 AUDIO_BUFFER_ADDR	equ (SHARED_BLOCK_ADDR + $100)			; $FA4100
-AUDIO_BUFFER_SIZE	equ 256
-AUDIO_BUFFER_END	equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)	; $FA4200
+AUDIO_BUFFER_SIZE	equ 1024
+AUDIO_BUFFER_END	equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)	; $FA4500
 
 ; APP_FREE starts after the audio buffer.
-APP_FREE_ADDR		equ AUDIO_BUFFER_END				; $FA4200
+APP_FREE_ADDR		equ AUDIO_BUFFER_END				; $FA4500
 FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
 
 ; Transitional: the pre-Story-1.2 boot UI fills only the first 8000 bytes

@@ -62,7 +62,7 @@
  * logarithmic LUT (linear PCM -> closest matching YM volume). */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
-#define CART_AUDIO_BUFFER_SIZE           256
+#define CART_AUDIO_BUFFER_SIZE           1024
 
 /* APP_FREE arena starts after the audio buffer. */
 #define CART_APP_FREE_OFFSET                                                  \
@@ -134,9 +134,11 @@
  *   - Net: ~285 us VBL slack reclaimed on the m68k side
  */
 #define CART_FB_CHUNK_BYTES           48   /* size of one m68k MOVEM-burst group (12 longwords; A0 and A7 omitted -- A0 is the dedicated Timer-B audio pointer, A7 is the SP) */
-#define CART_FB_CHUNK_COUNT           666  /* 666 * 48 = 31968 bytes of FB blitted per VBL */
+#define CART_FB_BLIT_LINES            200  /* must match FB_COPY_LINES in target/atarist/src/userfw.s */
+#define CART_FB_BLIT_BYTES            (CART_FB_BLIT_LINES * 160)  /* total bytes the m68k blits per VBL (160 = ST 4bpp scanline) */
+#define CART_FB_CHUNK_COUNT           (CART_FB_BLIT_BYTES / CART_FB_CHUNK_BYTES)  /* iterations of the unrolled MOVEM-pair */
 #define CART_FB_CHUNK_COVERED         (CART_FB_CHUNK_BYTES * CART_FB_CHUNK_COUNT)
-#define CART_FB_CHUNK_TAIL            (CART_FRAMEBUFFER_SIZE - CART_FB_CHUNK_COVERED)  /* 32 bytes copied by the m68k via an 8-longword d16(a5) MOVEM after the main predec unroll */
+#define CART_FB_CHUNK_TAIL            (CART_FB_BLIT_BYTES - CART_FB_CHUNK_COVERED)  /* bytes copied by the m68k via d16(a5) MOVEM after the main predec unroll */
 
 /* RP→m68k command sentinel values. The m68k polls the longword at
  * CART_CMD_SENTINEL_OFFSET; non-zero values steer it out of the

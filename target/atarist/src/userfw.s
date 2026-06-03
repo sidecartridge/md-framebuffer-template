@@ -160,15 +160,28 @@ FBDRV_POLL_CTR        set 0
     endc
     endr
     ;
-    ; Tail: copy the last FBDRV_TAIL_BYTES (=32) bytes of the image
-    ; that the chunked main loop can't reach (32000 isn't a multiple
-    ; of FBDRV_ITER_BYTES=48). A6 is at UFW_FB_SRC + 31968 after the
-    ; REPT; A5 is back at page_start (predec walked all the way down).
-    ; The RP-side fb_chunky_to_planar leaves the 32 bytes at cart-FB
-    ; offset 31968..31999 in NATURAL order (not chunk-reversed), so
-    ; this is a straight forward-direction copy via d16(a5) store.
+    ; Tail: copy the last FBDRV_TAIL_BYTES bytes of the blitted
+    ; region that the chunked main loop can't reach (FB_COPY_LINES *
+    ; 160 isn't a multiple of FBDRV_ITER_BYTES=48). A6 is at
+    ; UFW_FB_SRC + FBDRV_MAIN_BYTES after the REPT; A5 is back at
+    ; page_start. The RP-side fb_chunky_to_planar leaves these tail
+    ; bytes in NATURAL (non-reversed) order in cart-FB, so this is a
+    ; straight forward-direction copy via d16(a5).
+    ;
+    ; The register list must hold exactly FBDRV_TAIL_BYTES/4 longs.
+    ; Current `d0-d7` covers 32 bytes (= FB_COPY_LINES=200, 32000 -
+    ; 666*48 = 32). Other useful settings:
+    ;   FB_COPY_LINES=180 -> 600*48 = 28800 exactly, 0-byte tail
+    ;                       (the `ifne` skips the block entirely).
+    ;   FB_COPY_LINES=198 -> 660*48 = 31680 exactly, 0-byte tail.
+    ;   FB_COPY_LINES=199 -> 31840 - 663*48 = 16 B tail (d0-d3).
+    ;   FB_COPY_LINES=190 -> 30400 - 633*48 = 16 B tail (d0-d3).
+    ; For other tail sizes, manually adjust the register list to
+    ; cover FBDRV_TAIL_BYTES/4 longwords.
+    ifne    FBDRV_TAIL_BYTES
     movem.l (a6)+, d0-d7
     movem.l d0-d7, FBDRV_TAIL_DISP(a5)
+    endc
                       endm
 
 ; Atari ST VBL interrupt vector. Replacing TOS's handler here drops
@@ -209,21 +222,23 @@ YM_SELECT             equ $FFFF8800
 YM_DATA               equ $FFFF8802
 YM_REG_MIXER          equ 7                  ; tone+noise enables
 YM_REG_CHA_VOL        equ 8                  ; channel A volume (low 4 bits)
+YM_REG_CHB_VOL        equ 9                  ; channel B volume (low 4 bits)
 YM_MIXER_DAC_CHA      equ $FE                ; tone A enabled, all other tones/noise off, ports out
+YM_MIXER_DAC_AB       equ $FC                ; tones A AND B enabled, tone C off, all noise off, ports out (Ghostbusters dual-channel fake DAC)
 
 ; Cart-shared audio sample buffer (mirrors AUDIO_BUFFER_ADDR /
 ; AUDIO_BUFFER_SIZE in main.s and CART_AUDIO_BUFFER_OFFSET in
 ; rp/src/include/cart_shared.h). 256 bytes of YM ch A volume
 ; nibbles, filled by the RP and read by the Timer-B handler.
 AUDIO_BUFFER_ADDR     equ $00FA4100
-AUDIO_BUFFER_SIZE     equ 256
+AUDIO_BUFFER_SIZE     equ 1024
 AUDIO_BUFFER_END      equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)
 
 ; Number of 320-px lines the cart->ST blit covers per frame. Full ST
 ; low-res is 200; copying fewer leaves the bottom band of the
 ; destination ST page untouched (useful for a status row or to bound
 ; the blitter cost).
-FB_COPY_LINES         equ 200
+FB_COPY_LINES         equ 200         ; M68k copies all 200 lines (32000 bytes = 666 chunks * 48 B + 32-byte tail). Full screen blitted.
 FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
 
 ; --- IKBD ownership (Epic 3 Story 3.1) -----------------------------
@@ -245,11 +260,19 @@ MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (delay-m
 MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit countdown)
 
 ; Timer-B audio rate. MFP master clock = 2.4576 MHz. We pick a /4
-; prescaler with count 98:
-;   f = 2.4576 MHz / (4 * 98) = 6269 Hz
-; close to the STE DMA "low" sampling rate of 6258 Hz (0.18% off).
+; prescaler with count 110:
+;   f = 2.4576 MHz / (4 * 110) = 5,585.45 Hz
+; (~10.9% slower than STE-low's 6,258 Hz). The count was raised from
+; 98 -> 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 macro;
+; sample.h is still generated at the older 6,269 Hz rate, so the
+; jingle plays back ~11% lower pitch (about 2 semitones down) -- a
+; modest but audible detune. Regenerate sample.h at 5585 Hz via
+; wav_to_ym4.py if exact pitch matters. PAL VBL = 49.92 Hz so
+; ~111.71 samples/VBL. At 2 bytes per sample (dual-ghost LUT) that's
+; ~223 bytes/VBL in the cart buffer (audio.c's AUDIO_BYTES_PER_VBL
+; = 224 matches this).
 TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
-TIMERB_COUNT          equ 98                 ; ~6269 Hz
+TIMERB_COUNT          equ 110                ; ~5,585 Hz (~112 samples/PAL VBL)
 
 ; IRQ vector slots we take over. $70 (VBL) already handled by the
 ; original userfw code path (D3 holds the save).
@@ -364,19 +387,31 @@ userfw:
     clr.b   MFP_IMRA.w
     clr.b   MFP_IMRB.w
 
-    ; --- YM2149 init: ch A as a 4-bit DAC -----------------------
-    ; Single-channel fake-DAC: enable tone on ch A (mixer bit 0 = 0)
-    ; so the channel's output path is open, set its tone period to 0
-    ; (counter runs at max -> effectively DC above the audio band so
-    ; the volume register alone shapes the output), and latch reg 8
-    ; (ch A volume) -- subsequent writes to YM_DATA go straight to
-    ; the volume register. Initial volume = 0 (silence).
+    ; --- YM2149 init: ch A + ch B as Ghostbusters dual-channel DAC
+    ; Enable tones on BOTH ch A and ch B (mixer bits 0,1 = 0). Tone
+    ; periods all 0 so the counters run at max -- effectively DC
+    ; clamp above the audio band, so the volume registers alone
+    ; shape each channel's output. The two channels sum
+    ; acoustically; the Timer-B handler writes a (vA, vB) pair per
+    ; fire, and the Ghostbusters 64-entry hand-tuned LUT picks the
+    ; pair that best approximates the desired linear amplitude on
+    ; the YM's logarithmic volume curve.
+    ;
+    ; Reg 8 (ch A volume) is latched LAST so the first Timer-B fire
+    ; can write ch A immediately; the handler toggles to reg 9
+    ; (ch B) mid-fire and back to reg 8 at the end.
     move.b  #YM_REG_MIXER, YM_SELECT.w
-    move.b  #YM_MIXER_DAC_CHA, YM_DATA.w  ; $FE: tone A enabled, ch B+C tones off, all noise off, ports out
+    move.b  #YM_MIXER_DAC_AB, YM_DATA.w   ; $FC: tones A+B on, tone C off, all noise off, ports out
     move.b  #0, YM_SELECT.w
     move.b  #0, YM_DATA.w                 ; R0 = ch A fine period
     move.b  #1, YM_SELECT.w
     move.b  #0, YM_DATA.w                 ; R1 = ch A coarse period
+    move.b  #2, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R2 = ch B fine period
+    move.b  #3, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R3 = ch B coarse period
+    move.b  #YM_REG_CHB_VOL, YM_SELECT.w  ; latch reg 9 to zero ch B
+    move.b  #0, YM_DATA.w                 ; ch B vol = 0 (silence)
     move.b  #YM_REG_CHA_VOL, YM_SELECT.w  ; latch reg 8 (next YM_DATA writes hit ch A volume)
     move.b  #0, YM_DATA.w                 ; ch A vol = 0 (silence)
 
@@ -478,13 +513,16 @@ userfw:
     ; UFW_SCREEN_PAGE (preserved by FBDRV_INLINE). Only the MID byte
     ; of the screen base differs between the two pages -- HIGH was
     ; written once at boot (constant $07 for both $70000 / $78000).
-    move.l  a5, d0
-    move.l  d0, d1
-    lsr.w   #8, d1
-    move.b  d1, VIDEO_BASE_ADDR_MID.w
+    ;
+    ; UFW_SCREEN_PAGE is a 32-bit address stored big-endian, so byte
+    ; +2 of the longword is exactly the MID byte (bits 8..15) we need
+    ; to write to VIDEO_BASE_ADDR_MID. Read it straight from memory
+    ; instead of recomputing via lsr/move chain from A5.
+    move.b  UFW_SCREEN_PAGE+2, VIDEO_BASE_ADDR_MID.w
 
     ; Toggle UFW_SCREEN_PAGE between SCREEN_A and SCREEN_B for the
     ; next frame.
+    move.l  a5, d0
     eor.l   #UFW_SCREEN_XOR, d0
     move.l  d0, UFW_SCREEN_PAGE
 
@@ -543,10 +581,17 @@ userfw:
     rts
 
 ; -------------------------------------------------------------------
-; userfw_vbl -- minimal VBL interrupt handler. Clears UFW_VBL_FLAG
-; so .vbl_loop's `stop`-then-check wait can distinguish a VBL wake
-; from a Timer-B (or other MFP) wake. Uses zero registers; the
-; m68k pushes only SR+PC on IRQ entry.
+; userfw_vbl -- VBL interrupt handler. Two jobs:
+;   1. Reset A0 to AUDIO_BUFFER_ADDR. This is the cart-buffer base,
+;      and Timer-B will start consuming samples from offset 0 on
+;      the next IRQ. Pinning A0 = base once per VBL eliminates the
+;      explicit `cmpa.l + bcs.s` wrap in the Timer-B hot path, so
+;      that handler shrinks to a single `move.b (a0)+, YM_DATA.w`
+;      + rte. A0 is dedicated to audio (excluded from the
+;      FBDRV_INLINE MOVEM list and from the IKBD poll), so it's
+;      safe to overwrite here from IRQ context.
+;   2. Clear UFW_VBL_FLAG so .vbl_loop's `stop`-then-check wait can
+;      distinguish a VBL wake from a Timer-B (or other MFP) wake.
 ;
 ; This replaces TOS's VBL handler entirely while userfw is running,
 ; so mouse / cursor-blink / keyboard-repeat / _vblqueue all stop
@@ -554,45 +599,44 @@ userfw:
 ; buffer is no longer filled; ESC detection runs through the inline
 ; IKBD poll in FBDRV_INLINE.
 userfw_vbl:
+    movea.l #AUDIO_BUFFER_ADDR, a0
     clr.w   UFW_VBL_FLAG.w
     rte
 
 ; -------------------------------------------------------------------
-; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~6.27 kHz
-; (close to the STE DMA low sampling rate) when Timer-B is running
-; in /4 delay mode with TBDR=98.
+; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~12.5 kHz
+; when Timer-B is running in /4 delay mode with TBDR=49.
 ;
-; A0 is a DEDICATED audio buffer pointer initialised at boot
-; (movea.l #AUDIO_BUFFER_ADDR, a0). It is excluded from the
-; FBDRV_INLINE MOVEM list and from the macro's IKBD poll (which
-; uses A1 instead), and no other userfw code touches it -- so A0
-; survives across iterations without any save/restore here.
+; Dual-channel Ghostbusters-LUT mode: each sample in the cart buffer
+; is 2 bytes = (vA, vB), pre-resolved at build time by running the
+; raw G1.SAM bytes through the demo's 64-entry SAMPLE1 LUT (top 6
+; bits of each PCM byte index a (chA, chB) pair). Per fire:
+;   1. Write vA to YM ch A vol (reg 8 latched on entry).
+;   2. Latch reg 9 (ch B vol).
+;   3. Write vB to YM ch B vol.
+;   4. Re-latch reg 8 so the next fire writes ch A immediately.
 ;
-; Each fire: read the byte at (a0), write it to YM ch A volume,
-; bump A0 to the next sample, wrap from buffer end back to base.
+; A0 is a DEDICATED cart audio-buffer cursor (userfw_vbl resets it
+; to AUDIO_BUFFER_ADDR each VBL; postinc walks 2 bytes/fire).
 ;
 ; MFP is in auto-EOI mode (VR S=0) so the in-service bit clears
-; automatically on each IACK cycle -- no ISRA poke needed.
+; automatically on each IACK cycle.
 ;
-; Cycle budget (no-wrap path):
-;   move.b  (a0), YM_DATA.w               ; 16 cyc
-;   addq.l  #1, a0                         ;  8 cyc
-;   cmpa.l  #AUDIO_BUFFER_END, a0          ; 14 cyc
-;   bcs.s   .no_wrap                       ; 10 cyc
-;   ---                                    ; (skip movea on wrap path)
+; Cycle budget per fire:
+;   move.b  (a0)+, YM_DATA.w               ; 12 cyc -- vA -> ch A vol
+;   move.b  #YM_REG_CHB_VOL, YM_SELECT.w   ; 12 cyc -- latch reg 9
+;   move.b  (a0)+, YM_DATA.w               ; 12 cyc -- vB -> ch B vol
+;   move.b  #YM_REG_CHA_VOL, YM_SELECT.w   ; 12 cyc -- re-latch reg 8
 ;   rte                                    ; 20 cyc
-;   ---                                    ; 68 cyc/IRQ no-wrap
-; Wrap path adds 8 (bcs not taken) + 12 (movea imm) - 10 = +10 cyc
-; once every 256 fires -- ~0.05 cyc/IRQ amortized.
-; vs the previous A0-save/restore version at 100 cyc/IRQ: saves
-; ~32 cyc/fire * ~125 fires/VBL = ~4000 cyc/VBL (~500 us).
+;   ---                                    ; 68 cyc/IRQ
+; At 12,539 Hz: 68 * 251 = ~17.1 k cyc/VBL = 2.1 ms = 10.7% CPU.
+; Combined with FB_COPY_LINES=100 macro (~8.8 ms / VBL = 44%),
+; total VBL load ~55%, leaving ~9.1 ms slack.
 userfw_timerb_audio:
-    move.b  (a0), YM_DATA.w
-    addq.l  #1, a0
-    cmpa.l  #AUDIO_BUFFER_END, a0
-    bcs.s   .no_wrap
-    movea.l #AUDIO_BUFFER_ADDR, a0
-.no_wrap:
+    move.b  (a0)+, YM_DATA.w               ; vA -> ch A vol
+    move.b  #YM_REG_CHB_VOL, YM_SELECT.w   ; latch ch B vol reg
+    move.b  (a0)+, YM_DATA.w               ; vB -> ch B vol
+    move.b  #YM_REG_CHA_VOL, YM_SELECT.w   ; back to ch A vol reg for next fire
     rte
 
 ; -------------------------------------------------------------------
