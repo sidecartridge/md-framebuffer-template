@@ -70,6 +70,17 @@ void fb_render_static(void);
  *         main loop at any cadence. */
 void fb_render_frame(void);
 
+/** @brief Publish the current contents of `fb_chunked_buffer` to the
+ *         cart framebuffer: runs chunky-to-planar (with the dual-core
+ *         dispatch + chunk-reversal) and then advances FB_FRAME_COUNTER
+ *         so the m68k VBL loop sees a new frame.
+ *
+ *         Apps / demo modules call this once per main-loop iteration
+ *         after drawing into the chunked buffer; do NOT call from
+ *         multiple paths in the same loop iteration (each call costs
+ *         ~1 ms of c2p + memcpy work). */
+void fb_publish(void);
+
 #ifdef __cplusplus
 }
 #endif

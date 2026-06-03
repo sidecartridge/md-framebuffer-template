@@ -54,6 +54,23 @@
 #define CART_SHARED_VARIABLES_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x10)
 #define CART_SHARED_VARIABLES_SLOTS      60      /* 240 bytes total */
 
+/* 16-entry ST palette published by the RP, applied by the m68k VBL
+ * handler to $FFFF8240..$FFFF825E each frame. Format: 16 contiguous
+ * 16-bit words. Each word is the standard ST 9-bit palette format
+ * 0000.0RRR.0GGG.0BBB. uint16_t writes are transparent across the
+ * cart-bus byte-swap so the RP can write the m68k-observable word
+ * value directly.
+ *
+ * Lives inside SHARED_VARIABLES (slots 12..19 = offsets +0x30..0x4F
+ * = absolute $FA4040..$FA405F). Apps that don't want RP-driven
+ * palette publishing can leave the slot at zeros (= black palette
+ * = all-black screen) and write $FFFF8240 from their own m68k code
+ * instead. */
+#define CART_PALETTE_OFFSET                                                   \
+  (CART_SHARED_VARIABLES_OFFSET + (12 * 4))      /* $4040 */
+#define CART_PALETTE_ENTRIES             16
+#define CART_PALETTE_SIZE                (CART_PALETTE_ENTRIES * 2)  /* 32 B */
+
 /* Audio sample buffer. Single-channel YM2149 ch A 4-bit DAC: each
  * byte holds a YM volume nibble (0..15) in its low 4 bits. The m68k
  * Timer-B IRQ handler fires at ~6.27 kHz and reads one byte per

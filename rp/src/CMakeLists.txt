@@ -110,6 +110,11 @@ target_sources(${PROJECT_NAME} PRIVATE
         gconfig.c
         ikbd.c
         hw_config.c
+        palette.c
+        demo_menu.c
+        demo_parallax.c
+        demo_3d.c
+        demo_sprites.c
         reset.c
         romemul.c
         sdcard.c

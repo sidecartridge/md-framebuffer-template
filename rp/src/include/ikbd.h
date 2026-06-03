@@ -83,6 +83,15 @@ typedef struct {
  * empty. */
 bool ikbd_pop_key(ikbd_key_event_t *out);
 
+/* Enable / disable the built-in ESC press+release -> CMD_BOOT_GEM
+ * sentinel write. Default = true (backward-compatible with the
+ * Epic 3 ergonomic of "press ESC to exit"). Apps that want to own
+ * the ESC key (e.g. Epic 5's menu+demo dispatcher that uses ESC for
+ * "back to menu") call ikbd_set_esc_auto_exit(false) once at boot.
+ * ESC events are still delivered via ikbd_pop_key() regardless of
+ * the setting. */
+void ikbd_set_esc_auto_exit(bool enabled);
+
 #ifdef __cplusplus
 }
 #endif

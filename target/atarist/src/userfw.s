@@ -54,10 +54,19 @@ VIDEO_BASE_ADDR_MID   equ $FFFF8203
 ; (cherry-picked from md-sprites-demo). Foreground text in the FB also
 ; uses idx 0, so during BLIT_MARK_RUNNING the white text momentarily
 ; becomes black -- harmless since the blit is only a few ms long.
-PALETTE_IDX0          equ $FFFF8240
+PALETTE_BASE          equ $FFFF8240          ; 16 hardware palette words ($FFFF8240..$FFFF825E)
+PALETTE_IDX0          equ PALETTE_BASE
 BLIT_MARK_VSYNC       equ $000               ; black: vsync returned, copy not yet started
 BLIT_MARK_RUNNING     equ $777               ; white: cart->ST copy in flight
 BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
+
+; FBDRV_DEBUG_MARKS = 1 paints palette-idx-0 with the three border
+; band colours above (black/white/green) at vsync / blit-running /
+; blit-done. Useful for timing measurement on a CRT but flickers
+; any visible content drawn in palette idx 0 (incl. the cart-side
+; palette publish below) -- demos (Epic 5) turn this off. Set to
+; 1 when measuring.
+FBDRV_DEBUG_MARKS     equ 0
 
 ; Scratch word in TOS's _dskbufp ($4C6..$4C9). userfw does no disk
 ; I/O, so the slot is fair game while userfw owns the machine.
@@ -201,6 +210,12 @@ FB_FRAME_COUNTER      equ $00FA400C
 ; with main.s's CMD_MAGIC_SENTINEL_ADDR / CMD_BOOT_GEM equs.
 CMD_MAGIC_SENTINEL    equ $00FA4000
 CMD_BOOT_GEM          equ 2
+
+; 16-entry ST palette slot (Epic 5). 32 bytes of palette words
+; published by the RP; .vbl_loop applies them to PALETTE_BASE each
+; frame via a MOVEM-load + MOVEM-store. Mirrors main.s PALETTE_ADDR.
+PALETTE_ADDR          equ $00FA4040
+PALETTE_SIZE          equ 32
 
 ; Screen pages live just below TOS RAM top (TT-style 256 KB ST RAM
 ; assumption -- screens land at $70000/$78000, matching md-sprites-demo).
@@ -481,7 +496,20 @@ userfw:
     tst.w   UFW_VBL_FLAG.w
     bne.s   .wait_vbl
 
+    ifne    FBDRV_DEBUG_MARKS
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
+    endc
+
+    ; Publish RP-supplied palette to the shifter (Epic 5). 16 words
+    ; from PALETTE_ADDR -> $FFFF8240..$FFFF825E via two MOVEMs.
+    ; Cost: 76 (load) + 72 (store) + 16 (lea) = ~164 cyc / VBL =
+    ; ~20 us. Apps that don't want RP-driven palette can leave the
+    ; cart slot zero (= all-black screen, since the m68k still
+    ; publishes it every frame) -- swap the load EA below for
+    ; their own palette source if needed.
+    lea     PALETTE_ADDR, a5
+    movem.l (a5), d0-d7
+    movem.l d0-d7, PALETTE_BASE.w
 
     ; A5 = END of the screen page chunk-covered region. FBDRV_INLINE
     ; uses predec MOVEM (`movem.l list, -(a5)`) and walks A5 backwards
@@ -503,9 +531,13 @@ userfw:
     ; SP valid so IRQs can fire safely. A6 is the macro's own src
     ; pointer (overwritten at macro entry) so no save is needed.
     ; D0-D7 / A1-A4 are scratch and not consumed after.
+    ifne    FBDRV_DEBUG_MARKS
     move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w  ; border = white (blit in flight)
+    endc
     FBDRV_INLINE                      ; inline cart->ST screen copy
+    ifne    FBDRV_DEBUG_MARKS
     move.w  #BLIT_MARK_DONE, PALETTE_IDX0.w     ; border = green (copy done)
+    endc
 
 .after_copy:
 

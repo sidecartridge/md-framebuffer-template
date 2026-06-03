@@ -226,7 +226,14 @@ void fb_render_frame(void) {
                              : 2 * y_range - sy_cycle);
   fb_blit_key(&demo_sprite, sx, sy, DEMO_SPRITE_KEY);
 
-  /* Publish: transpose chunked -> planar into the cart framebuffer. */
+  fb_publish();
+
+  last_frame_us = time_us_32() - t_frame_start;
+}
+
+void fb_publish(void) {
+  /* Transpose chunked -> planar into the cart framebuffer (dual-core
+   * c2p + chunk-reversed memcpy; see fb_chunked.c). */
   uint32_t t_conv_start = time_us_32();
   fb_chunky_to_planar((uint16_t *)fb_screen.framebuffer);
   last_convert_us = time_us_32() - t_conv_start;
@@ -236,10 +243,8 @@ void fb_render_frame(void) {
   /* Publish the new frame counter as the LAST write of this frame.
    * The memory barrier ensures every preceding FB write has committed
    * to the RP2040 bus before the m68k can observe the new counter
-   * value -- otherwise the m68k VBL loop could read counter=N and blit
-   * a half-finished frame. */
+   * value -- otherwise the m68k VBL loop could read counter=N and
+   * blit a half-finished frame. */
   __sync_synchronize();
   *fb_frame_counter = fb_frame_tick;
-
-  last_frame_us = time_us_32() - t_frame_start;
 }
