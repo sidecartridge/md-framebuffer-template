@@ -77,13 +77,9 @@ void emul_start() {
   // Initialise the cart audio buffer producer (see audio.h). The
   // m68k Timer-B IRQ in userfw.s consumes the buffer at ~5,585 Hz
   // (2 B/sample dual-channel mode). audio_init() leaves the buffer
-  // silent until a callback is installed; the template demo plays
-  // the embedded Ghostbusters G1 jingle on loop via
-  // audio_play_loop(). Apps replace this with their own
-  // audio_play_loop / audio_set_fill_callback as needed.
+  // silent until a callback is installed; the playback source is
+  // chosen below, after the SD card has had a chance to mount.
   audio_init();
-  audio_play_loop(audio_sample_data,
-                  (uint32_t)sizeof(audio_sample_data));
 
   // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
   // GPIO 26). The main loop drains the ring directly into the IKBD
@@ -104,6 +100,17 @@ void emul_start() {
   const char *folderName = folder ? folder->value : "/test";
   if (sdcard_initFilesystem(&fsys, folderName) != SDCARD_INIT_OK) {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
+  }
+
+  // Audio source selection (Story 4.4 demo). Try to stream a
+  // .YMS file from the app folder first; on any failure (no SD,
+  // file missing, bad header, rate mismatch) fall back to the
+  // baked-in Ghostbusters G1 jingle so the demo still has audio.
+  // Apps swap their own audio_play_yms_file path or replace this
+  // block with audio_set_fill_callback() / audio_play_loop().
+  if (audio_play_yms_file("DEMO.YMS") < 0) {
+    audio_play_loop(audio_sample_data,
+                    (uint32_t)sizeof(audio_sample_data));
   }
 
   // Cartridge SELECT button -- apps can poll select_isPressed().

@@ -14,11 +14,14 @@
 
 #include "audio.h"
 
+#include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "cart_shared.h"
 #include "constants.h"
 #include "debug.h"
+#include "ff.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
@@ -47,11 +50,26 @@ static const uint8_t *s_loop_data;
 static uint32_t s_loop_bytes;
 static uint32_t s_loop_pos;
 
+/* .YMS-file streaming state. audio_play_yms_file() validates the
+ * 16-byte header, stores the data offset, and installs audio_yms_cb
+ * as the per-VBL fill callback. The file is kept open for the
+ * lifetime of playback. */
+#define AUDIO_YMS_HEADER_SIZE     16u
+#define AUDIO_YMS_MODE_DUAL_GHOST 1u
+/* Must match TIMERB_COUNT in target/atarist/src/userfw.s:
+ *   2.4576 MHz / 4 / 110 = 5,585.45 Hz */
+#define AUDIO_NATIVE_RATE_HZ      5585u
+
+static FIL s_yms_file;
+static bool s_yms_open;
+static FSIZE_t s_yms_data_offset;
+
 void audio_init(void) {
   uint8_t *base = (uint8_t *)&__rom_in_ram_start__;
   s_audio_buf = base + CART_AUDIO_BUFFER_OFFSET;
   s_last_frame_us = 0;
   s_fill_cb = NULL;
+  s_yms_open = false;
 
   /* ERASE_FIRMWARE_IN_RAM at emul_start already zeroed the cart
    * buffer (= silence on YM). With no callback installed, the
@@ -87,6 +105,88 @@ void audio_play_loop(const uint8_t *data, uint32_t bytes) {
   s_loop_bytes = bytes;
   s_loop_pos = 0;
   s_fill_cb = audio_loop_cb;
+}
+
+static void audio_yms_cb(uint8_t *buf, uint32_t bytes) {
+  UINT br = 0;
+  FRESULT res = f_read(&s_yms_file, buf, bytes, &br);
+  if (res != FR_OK) {
+    /* I/O error -- silence until the next call. The cursor is in
+     * an undefined state, so seek back to the data start for the
+     * next attempt. */
+    for (uint32_t i = 0; i < bytes; i++) {
+      buf[i] = 0;
+    }
+    f_lseek(&s_yms_file, s_yms_data_offset);
+    return;
+  }
+  if (br < bytes) {
+    /* EOF mid-fill: wrap to data start and read the remainder. */
+    f_lseek(&s_yms_file, s_yms_data_offset);
+    UINT br2 = 0;
+    f_read(&s_yms_file, buf + br, bytes - br, &br2);
+    /* If the file body is shorter than one VBL's worth, pad the
+     * still-unfilled tail with silence rather than reading the
+     * header bytes. */
+    for (uint32_t i = br + br2; i < bytes; i++) {
+      buf[i] = 0;
+    }
+  }
+}
+
+int audio_play_yms_file(const char *path) {
+  /* Close any previously open YMS file. Idempotent on a fresh init. */
+  if (s_yms_open) {
+    f_close(&s_yms_file);
+    s_yms_open = false;
+  }
+
+  FRESULT res = f_open(&s_yms_file, path, FA_READ);
+  if (res != FR_OK) {
+    DPRINTF("audio_play_yms_file: f_open('%s') failed (%d)\n", path, (int)res);
+    return -1;
+  }
+
+  uint8_t hdr[AUDIO_YMS_HEADER_SIZE];
+  UINT br = 0;
+  res = f_read(&s_yms_file, hdr, sizeof(hdr), &br);
+  if (res != FR_OK || br != sizeof(hdr)) {
+    DPRINTF("audio_play_yms_file: short header read (%d, %u/%u)\n",
+            (int)res, (unsigned)br, (unsigned)sizeof(hdr));
+    f_close(&s_yms_file);
+    return -1;
+  }
+
+  if (memcmp(hdr, "YMS1", 4) != 0) {
+    DPRINTF("audio_play_yms_file: bad magic %02X%02X%02X%02X\n",
+            hdr[0], hdr[1], hdr[2], hdr[3]);
+    f_close(&s_yms_file);
+    return -1;
+  }
+
+  uint32_t rate = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8)
+                | ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+  if (rate != AUDIO_NATIVE_RATE_HZ) {
+    DPRINTF("audio_play_yms_file: rate mismatch (file %lu, expected %u)\n",
+            (unsigned long)rate, (unsigned)AUDIO_NATIVE_RATE_HZ);
+    f_close(&s_yms_file);
+    return -1;
+  }
+
+  if (hdr[12] != AUDIO_YMS_MODE_DUAL_GHOST) {
+    DPRINTF("audio_play_yms_file: unsupported mode tag %u (need %u)\n",
+            (unsigned)hdr[12], (unsigned)AUDIO_YMS_MODE_DUAL_GHOST);
+    f_close(&s_yms_file);
+    return -1;
+  }
+
+  s_yms_open = true;
+  s_yms_data_offset = AUDIO_YMS_HEADER_SIZE;
+  s_fill_cb = audio_yms_cb;
+
+  DPRINTF("audio_play_yms_file: '%s' streaming (rate %lu Hz, mode %u)\n",
+          path, (unsigned long)rate, (unsigned)hdr[12]);
+  return 0;
 }
 
 void audio_render_frame(void) {

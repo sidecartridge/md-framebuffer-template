@@ -342,6 +342,46 @@ def _header_guard_from_path(path: pathlib.Path) -> str:
     return f"{guard}_"
 
 
+# YMS mode tags: must stay in sync with AUDIO_YMS_MODE_* in
+# rp/src/audio.c. The RP-side audio_play_yms_file() currently only
+# accepts tag 1 (dual-ghost); other tags are reserved for future
+# m68k handler variants.
+YMS_MODE_TAGS: dict[str, int] = {
+    "dual-ghost": 1,
+    "single-a":   2,
+    "raw-byte":   3,
+    "ghostbusters": 4,
+    "best-pair":  5,
+    "nibble":     6,
+}
+
+
+def _write_yms_file(
+    samples: list[int],
+    out_path: pathlib.Path,
+    target_rate: int,
+    mode: str,
+) -> None:
+    """Write a binary .YMS file (16-byte header + raw byte body) for
+    SD streaming via audio_play_yms_file() on the RP side. Format:
+        off  0:  'Y' 'M' 'S' '1'        magic
+        off  4:  uint32 rate_hz         LE
+        off  8:  uint32 data_len_bytes  LE
+        off 12:  uint8  mode_tag        (1 = dual-ghost)
+        off 13:  uint8[3]              reserved (must be 0)
+        off 16:  raw byte body
+    """
+    mode_tag = YMS_MODE_TAGS.get(mode, 0)
+    data = bytes(samples)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("wb") as out:
+        out.write(b"YMS1")
+        out.write(int(target_rate).to_bytes(4, "little"))
+        out.write(len(data).to_bytes(4, "little"))
+        out.write(bytes([mode_tag, 0, 0, 0]))
+        out.write(data)
+
+
 def _write_c_header(
     samples: list[int],
     out_path: pathlib.Path,
@@ -413,7 +453,15 @@ def parse_args() -> argparse.Namespace:
                         "1.0 = no boost (default); 2.0 = +6 dB (typical "
                         "voice content boosted to fill the lut-scale "
                         "range; peaks saturate with mild distortion)")
-    p.add_argument("--header-output", type=pathlib.Path, required=True)
+    p.add_argument("--header-output", type=pathlib.Path, default=None,
+                   help="Write a C header (uint8_t array + sample-count) to "
+                        "PATH. Embed in firmware via #include. Default: skip.")
+    p.add_argument("--yms-output", type=pathlib.Path, default=None,
+                   help="Write a binary .YMS file (16-byte header + raw "
+                        "byte body) to PATH, suitable for streaming from SD "
+                        "via audio_play_yms_file() on the RP side. Default: "
+                        "skip. At least one of --header-output / --yms-output "
+                        "must be supplied.")
     p.add_argument("--symbol", type=str, default="audio_sample_data")
     p.add_argument("--count-symbol", type=str, default="audio_sample_count")
     return p.parse_args()
@@ -426,6 +474,10 @@ def main() -> int:
         return 1
     if args.target_rate <= 0:
         print("error: --target-rate must be > 0", file=sys.stderr)
+        return 1
+    if not args.header_output and not args.yms_output:
+        print("error: at least one of --header-output / --yms-output is required",
+              file=sys.stderr)
         return 1
 
     suffix = args.input_path.suffix.lower()
@@ -447,9 +499,12 @@ def main() -> int:
     else:
         ym4 = _float_to_ym_pair(resampled, args.lut_scale, args.pcm_gain)
 
-    _write_c_header(
-        ym4, args.header_output, args.symbol, args.count_symbol, args.target_rate
-    )
+    if args.header_output:
+        _write_c_header(
+            ym4, args.header_output, args.symbol, args.count_symbol, args.target_rate
+        )
+    if args.yms_output:
+        _write_yms_file(ym4, args.yms_output, args.target_rate, args.mode)
 
     # bytes per sample:
     #   single-a, raw-byte -> 1 byte
@@ -474,7 +529,12 @@ def main() -> int:
         gain_db = 20.0 * math.log10(max(args.pcm_gain, 1e-9))
         print(f"PCM gain:     {args.pcm_gain:.4f}  ({gain_db:+.1f} dB peak boost; peaks clip)")
     print(f"Samples:      {sample_count} ({len(ym4)} bytes @ {bytes_per_sample} byte/sample, {duration_ms:.1f} ms)")
-    print(f"Header:       {args.header_output}")
+    if args.header_output:
+        print(f"Header:       {args.header_output}")
+    if args.yms_output:
+        mode_tag = YMS_MODE_TAGS.get(args.mode, 0)
+        print(f"YMS file:     {args.yms_output} (mode tag {mode_tag}, "
+              f"{16 + len(ym4)} bytes total)")
     return 0
 
 

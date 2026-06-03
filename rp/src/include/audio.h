@@ -73,6 +73,29 @@ void audio_set_fill_callback(audio_fill_cb_t cb);
  * Replaces any previously installed callback. */
 void audio_play_loop(const uint8_t *data, uint32_t bytes);
 
+/* Convenience: open a .YMS file from SD and stream it on loop.
+ * The file format (produced by `tools/wav_to_ym4.py --yms-output`)
+ * is a 16-byte header followed by the raw byte body:
+ *   off  0:  'Y' 'M' 'S' '1'        magic
+ *   off  4:  uint32 rate_hz         little-endian; must match the
+ *                                   m68k Timer-B rate
+ *   off  8:  uint32 data_len_bytes  little-endian
+ *   off 12:  uint8  mode_tag        1 = dual-ghost (only mode the
+ *                                       current m68k handler plays)
+ *   off 13:  uint8[3]              reserved (= 0)
+ *   off 16:  raw byte body         streamed to the cart buffer
+ *
+ * The library opens the file, validates the header, and installs a
+ * callback that reads from the file on every per-VBL refill. SD is
+ * assumed mounted; call after sdcard_initFilesystem(). The file
+ * loops at EOF (cursor wraps back to the data start).
+ *
+ * Returns 0 on success, negative on failure (open failed / short
+ * read / bad magic / rate mismatch / unsupported mode). On failure
+ * the previously installed callback is preserved -- apps can use
+ * this to fall back to a baked-in audio_play_loop(). */
+int audio_play_yms_file(const char *path);
+
 #ifdef __cplusplus
 }
 #endif
