@@ -19,7 +19,7 @@
 #include "fb_blit.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
-#include "font6x8.h"            /* defines `font6x8` (FB_FONT instance) */
+#include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
 
 /* Story 2.3 demo sprite. Multi-colour 16x16 ball with a transparent
@@ -157,7 +157,7 @@ static const char *fb_fmt_uint(uint32_t n, char *buf, size_t buf_sz) {
 }
 
 void fb_render_static(void) {
-  font_set_font(&font6x8);
+  font_set_font(&font8x8);
   font_set_color(0);
   font_set_border(0, 0);
   font_align(FONT_ALIGN_CENTER);
@@ -180,7 +180,7 @@ void fb_render_frame(void) {
   fb_render_static();
 
   /* Frame counter at top-left. */
-  font_set_font(&font6x8);
+  font_set_font(&font8x8);
   font_set_color(0);
   font_set_border(0, 0);
   font_align(FONT_ALIGN_LEFT);

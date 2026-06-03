@@ -25,9 +25,9 @@
 #include "ikbd.h"
 #include "memfunc.h"
 
-/* font6x8 is defined in fb.c (the canonical single point that
- * includes the heavy font6x8.h glyph data). Demos just use it. */
-extern const struct FB_FONT font6x8;
+/* font8x8 is defined in fb.c (the canonical single point that
+ * includes the heavy font8x8.h glyph data). Demos just use it. */
+extern const struct FB_FONT font8x8;
 
 typedef enum {
   DEMO_STATE_MENU,
@@ -57,7 +57,7 @@ static void render_menu(void) {
    * text foreground = idx 0 (white). */
   fb_chunked_clear(15);
 
-  font_set_font(&font6x8);
+  font_set_font(&font8x8);
   font_set_color(0);
   font_set_border(0, 0);
   font_align(FONT_ALIGN_LEFT);
@@ -76,8 +76,9 @@ static void render_menu(void) {
   font_move(80, 116);
   font_print("3.  Multi-sprite swarm");
 
-  /* Footer hint. */
-  font_move(40, 168);
+  /* Footer hint. At 8px/char the 38-char line is 304px wide, so it
+   * starts at x=8 to clear the right edge (8..312 of 320). */
+  font_move(8, 168);
   font_print("Press 1-3 to start, ESC to exit to GEM");
 
   fb_publish();

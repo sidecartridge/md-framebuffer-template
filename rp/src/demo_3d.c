@@ -14,7 +14,7 @@
 #include "fb_chunked.h"
 #include "fb_font.h"
 
-extern const struct FB_FONT font6x8;
+extern const struct FB_FONT font8x8;
 
 static void demo_3d_init(void) {
   /* nothing yet */
@@ -27,7 +27,7 @@ static void demo_3d_teardown(void) {
 static void demo_3d_render_frame(void) {
   fb_chunked_clear(15);
 
-  font_set_font(&font6x8);
+  font_set_font(&font8x8);
   font_set_color(0);
   font_set_border(0, 0);
   font_align(FONT_ALIGN_LEFT);
