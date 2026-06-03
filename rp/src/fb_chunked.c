@@ -16,15 +16,25 @@
  * each frame's dispatch. `fb_chunked_init()` launches it once at
  * boot via the pico-sdk's `multicore_launch_core1`.
  *
- * Expected wallclock: ~1.0-1.3 ms per frame (each core ~1 ms of
- * compute + SRAM bank contention as both cores read chunked and
- * write planar simultaneously).
+ * Output staging: both cores write their natural row-major planar
+ * output into `fb_planar_scratch` in RP RAM. Once both halves are
+ * complete, fb_chunky_to_planar copies the planar bytes into the
+ * caller's `planar` (the cart framebuffer at $FA8300) with the
+ * 56-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
+ * macro uses `movem.l list, -(a5)` predec stores, which land each
+ * chunk in the destination ST page in reverse memory order. See the
+ * "Framebuffer chunk layout for the m68k MOVEM blit" comment in
+ * cart_shared.h for the full spec.
+ *
+ * Expected wallclock: ~1.0-1.3 ms per frame for the dual-core c2p
+ * + ~60-120 us for the chunk-reversed copy (571 * 56-byte memcpys).
  */
 
 #include "fb_chunked.h"
 
 #include <string.h>
 
+#include "cart_shared.h"
 #include "pico/multicore.h"
 
 uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE] __attribute__((aligned(4)));
@@ -37,6 +47,13 @@ extern void fb_c2p_half(uint16_t *dst,
 
 #define FB_C2P_HALF_SRC_BYTES (FB_CHUNKED_SIZE / 2)       /* 32000 */
 #define FB_C2P_HALF_DST_WORDS (FB_C2P_HALF_SRC_BYTES / 4) /* 8000 uint16_t */
+
+/* Planar scratch buffer: c2p outputs natural row-major planar bytes
+ * here; fb_chunky_to_planar then copies them to the caller's `planar`
+ * (the cart FB at $FA8300) with the m68k MOVEM chunks pre-reversed.
+ * 32 KB on the RP's 128 KB SRAM, 4-byte aligned for uint32 stores. */
+static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
+    __attribute__((aligned(4)));
 
 /* Core 1 forever-loop. Pops a dst pointer for the bottom half, runs
  * the asm worker, signals completion. Placed in RAM so the inner
@@ -63,14 +80,15 @@ void fb_chunked_clear(uint8_t color) {
 }
 
 void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
-  /* Dispatch bottom half to Core 1. The push is "blocking" in name but
-   * non-blocking in practice: we only ever have one outstanding message
-   * (Core 1 has drained the previous frame's signal before we get here)
-   * and the FIFO is 8 entries deep, so this returns immediately. */
-  multicore_fifo_push_blocking((uint32_t)(uintptr_t)(planar + FB_C2P_HALF_DST_WORDS));
+  /* Dispatch bottom half to Core 1. Both cores write into the
+   * scratch buffer (natural row-major layout). The push is "blocking"
+   * in name but non-blocking in practice: we only ever have one
+   * outstanding message and the FIFO is 8 entries deep. */
+  multicore_fifo_push_blocking(
+      (uint32_t)(uintptr_t)(fb_planar_scratch + FB_C2P_HALF_DST_WORDS));
 
   /* Top half: Core 0 runs the worker directly, in parallel with Core 1. */
-  fb_c2p_half(planar,
+  fb_c2p_half(fb_planar_scratch,
               fb_chunked_buffer,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES);
 
@@ -79,4 +97,29 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
    * Core 1's planar writes are guaranteed visible to Core 0 by the
    * time this returns. */
   (void)multicore_fifo_pop_blocking();
+
+  /* Chunk-reversed publish from scratch -> cart FB. cart-FB chunk K
+   * (bytes K*56..K*56+55) is filled with scratch chunk (570-K), so
+   * the m68k's predec MOVEM blit lands each chunk at its natural
+   * image position. The body unrolls cleanly: 56 bytes = 14 longword
+   * copies per chunk. */
+  const uint8_t *scratch_bytes = (const uint8_t *)fb_planar_scratch;
+  uint8_t *cart_bytes = (uint8_t *)planar;
+  for (uint32_t k = 0; k < CART_FB_CHUNK_COUNT; k++) {
+    const uint8_t *src_chunk =
+        scratch_bytes +
+        (CART_FB_CHUNK_COUNT - 1u - k) * (uint32_t)CART_FB_CHUNK_BYTES;
+    uint8_t *dst_chunk = cart_bytes + k * (uint32_t)CART_FB_CHUNK_BYTES;
+    memcpy(dst_chunk, src_chunk, CART_FB_CHUNK_BYTES);
+  }
+
+  /* Tail: the final CART_FB_CHUNK_TAIL bytes of the image (bottom-right
+   * 48 pixels at 4 bpp) don't fit into any 56-byte MOVEM chunk, so the
+   * m68k handles them with a small fixed-size MOVEM at the end of
+   * FBDRV_INLINE using d16(a5) addressing. That post-loop MOVEM reads
+   * from cart-FB[31976..31999] in NATURAL (non-reversed) order -- copy
+   * them straight from scratch. */
+  memcpy(cart_bytes + CART_FB_CHUNK_COVERED,
+         scratch_bytes + CART_FB_CHUNK_COVERED,
+         CART_FB_CHUNK_TAIL);
 }

@@ -59,6 +59,13 @@ BLIT_MARK_VSYNC       equ $000               ; black: vsync returned, copy not y
 BLIT_MARK_RUNNING     equ $777               ; white: cart->ST copy in flight
 BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 
+; Scratch word in TOS's _dskbufp ($4C6..$4C9). userfw does no disk
+; I/O, so the slot is fair game while userfw owns the machine.
+; .vbl_loop arms this to -1 then `stop`s; userfw_vbl clears it. The
+; m68k re-stops on any non-VBL IRQ (Timer-B etc.) and only exits the
+; wait when the VBL handler has cleared the flag.
+UFW_VBL_FLAG          equ $4C6               ; word: cleared by userfw_vbl, polled after each `stop`
+
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
 ; includes A7 in its register list; the current-page pointer
@@ -69,7 +76,6 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
-UFW_SP_SAVE           equ $00077FF0          ; longword: SP (A7) shadow during FBDRV_INLINE
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -82,67 +88,87 @@ UFW_SP_SAVE           equ $00077FF0          ; longword: SP (A7) shadow during F
 ; FB_COPY_LINES * 160 byte rows / 48 byte iters: 150*160/48=500,
 ; 200*160/48=666r32. For values that don't divide evenly the trailing
 ; bytes are simply not copied (they remain stale on the screen page).
-FBDRV_ITER_BYTES      equ 56                            ; 14 longwords: D0-D7 + A0-A4 + A7 (A6=src, A5=dst). A7 saved/restored around the macro.
+FBDRV_ITER_BYTES      equ 48                            ; 12 longwords: D0-D7 + A1-A4 (A6=src, A5=dst, A0=dedicated audio pointer, A7=SP preserved -- IRQs may fire during the macro).
 FBDRV_IKBD_POLL_EVERY equ 40                            ; insert inline IKBD poll every Nth MOVEM iter. 40 iters * ~31us = ~1.24ms (~20 HBLs).
 FBDRV_TOTAL_BYTES     equ (FB_COPY_LINES * FB_ROW_BYTES) ; honours FB_COPY_LINES
 FBDRV_MAIN_ITERS      equ (FBDRV_TOTAL_BYTES / FBDRV_ITER_BYTES)
-
-;----------------------------------------------------------------
-; FBDRV_DISP -- compile-time displacement counter used by the
-; FBDRV_INLINE unroll below. Each REPT iteration uses FBDRV_DISP
-; as the 16-bit signed displacement into d16(a5) for that block's
-; store, then increments by FBDRV_ITER_BYTES. The maximum
-; displacement after the last iteration is
-; (FBDRV_MAIN_ITERS - 1) * FBDRV_ITER_BYTES, must be inside the
-; 16-bit signed range (32767).
-FBDRV_DISP            set 0
+FBDRV_MAIN_BYTES      equ (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)
+FBDRV_TAIL_BYTES      equ (FBDRV_TOTAL_BYTES - FBDRV_MAIN_BYTES)  ; 20 bytes at FB_COPY_LINES=200 (= 5 longwords)
+FBDRV_TAIL_DISP       equ FBDRV_MAIN_BYTES                        ; tail goes at page_start + FBDRV_MAIN_BYTES (= 31980)
 
 ;----------------------------------------------------------------
 ; FBDRV_INLINE -- fully unrolled cart->ST screen framebuffer copy.
 ;
 ; Each REPT iteration emits:
-;   movem.l (a4)+, d0-d7/a0-a3              ; 4 B, 108 cycles
-;   movem.l d0-d7/a0-a3, FBDRV_DISP(a5)     ; 6 B, 108 cycles
-; FBDRV_DISP is bumped by FBDRV_ITER_BYTES every iteration at
-; assembly time, so the destination is reached via a 16-bit signed
-; displacement instead of a runtime `add.l #N, a5`. (Predec store
-; `movem.l ..., -(a5)` would save 4 cycles + 2 bytes per iter, but
-; needs RP-side c2p to write 48-byte chunks in reverse order to
-; reconstruct the image correctly -- deferred.)
+;   movem.l (a6)+, d0-d7/a1-a4   ; 4 B, ~108 cycles  -- read 48 B forward
+;   movem.l d0-d7/a1-a4, -(a5)   ; 4 B, ~104 cycles  -- predec store
+;
+; A7 (SP) and A0 are intentionally NOT in the MOVEM list:
+;   - A7: keeps the supervisor SP valid so IRQs can fire safely
+;     during the macro.
+;   - A0: dedicated to the Timer-B audio handler's read pointer.
+;     With A0 stable across the macro, the IRQ handler doesn't have
+;     to save/restore it (-24 cyc/IRQ * ~125 IRQ/VBL = ~3000 cyc/VBL).
+;     The inline IKBD poll uses A1 (which IS in the MOVEM list and
+;     gets reloaded each iter) so it never disturbs A0.
+;
+; Predec mode is 4 cyc faster per iter than d16(a5) displacement
+; (8+8n vs 12+8n on 68000). The catch: predec writes each 52-byte
+; chunk into the destination ST page in REVERSE order relative to
+; the source -- chunks land from the screen-page END (offset 31980)
+; down to the START (offset 0). For the displayed image to look
+; correct, the RP-side fb_chunky_to_planar pre-reverses chunks in
+; the cart FB at $FA8300, so the m68k's reversal restores the
+; natural image. See "Framebuffer chunk layout for the m68k MOVEM
+; blit" in rp/src/include/cart_shared.h for the full spec.
 ;
 ; Caller protocol (must be set up BEFORE the macro expansion):
-;   A5 = destination ST screen page ($70000 or $78000 in this
-;        template's double-buffer scheme).
+;   A5 = destination ST screen page END
+;        ($70000 + 31980 or $78000 + 31980; .vbl_loop adds the
+;        FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES offset via LEA after
+;        loading UFW_SCREEN_PAGE).
 ;
-; Clobbers: D0-D7, A0-A3, A4. A5 is NOT modified (the d16
-; displacement varies per iter instead of advancing A5).
+; Clobbers: D0-D7, A1-A4, A6. A0 and A7 are PRESERVED (A0 for the
+; Timer-B audio pointer, A7 for IRQ-safe SP).
+; A5 IS modified: after the macro
+; A5 = original SCREEN_PAGE end - (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)
+; = original page START, which is the value .after_copy expects in A5.
 ;
-; Code size: 10 B per unrolled iteration * FBDRV_MAIN_ITERS (500)
-; + 6 B setup = ~5 KB inline. Sits comfortably inside userfw's
-; 14 KB cart section budget.
+; Code size: 8 B per unrolled iteration * FBDRV_MAIN_ITERS (615)
+; + 6 B setup = ~5 KB inline. Plus IKBD poll blocks every 40 iters
+; and the small d16(a5) tail MOVEM at the end.
 FBDRV_INLINE          macro
     movea.l #UFW_FB_SRC, a6
-FBDRV_DISP            set 0
 FBDRV_POLL_CTR        set 0
     rept    FBDRV_MAIN_ITERS
-    movem.l (a6)+, d0-d7/a0-a4/a7
-    movem.l d0-d7/a0-a4/a7, FBDRV_DISP(a5)
-FBDRV_DISP            set FBDRV_DISP + FBDRV_ITER_BYTES
+    movem.l (a6)+, d0-d7/a1-a4
+    movem.l d0-d7/a1-a4, -(a5)
 FBDRV_POLL_CTR        set FBDRV_POLL_CTR + 1
     ifeq    FBDRV_POLL_CTR - FBDRV_IKBD_POLL_EVERY
 FBDRV_POLL_CTR        set 0
-    ; Inline IKBD poll. Clobbers D0/A0 -- safe because the next
-    ; MOVEM iter reloads D0-D7/A0-A4 from cart, and the .after_copy
+    ; Inline IKBD poll. Clobbers D0/A1 -- safe because the next
+    ; MOVEM iter reloads D0-D7/A1-A4 from cart, and the .after_copy
     ; code after the macro overwrites D0 with UFW_SCREEN_PAGE before
-    ; using it.now even 
+    ; using it. A0 is intentionally NOT touched here -- it holds the
+    ; dedicated audio buffer pointer for the Timer-B IRQ handler.
     btst    #0, ACIA_KBD_STATUS.w
     beq.s   *+18                          ; skip the 16-byte body if no data
     moveq   #0, d0                        ; pre-zero D0 so move.b yields a clean 0..255 word
-    lea     IKBD_WINDOW_BASE, a0
+    lea     IKBD_WINDOW_BASE, a1
     move.b  ACIA_KBD_DATA.w, d0
-    tst.b   (a0, d0.w)                    ; emit byte via cart-bus read
+    tst.b   (a1, d0.w)                    ; emit byte via cart-bus read
     endc
     endr
+    ;
+    ; Tail: copy the last FBDRV_TAIL_BYTES (=32) bytes of the image
+    ; that the chunked main loop can't reach (32000 isn't a multiple
+    ; of FBDRV_ITER_BYTES=48). A6 is at UFW_FB_SRC + 31968 after the
+    ; REPT; A5 is back at page_start (predec walked all the way down).
+    ; The RP-side fb_chunky_to_planar leaves the 32 bytes at cart-FB
+    ; offset 31968..31999 in NATURAL order (not chunk-reversed), so
+    ; this is a straight forward-direction copy via d16(a5) store.
+    movem.l (a6)+, d0-d7
+    movem.l d0-d7, FBDRV_TAIL_DISP(a5)
                       endm
 
 ; Atari ST VBL interrupt vector. Replacing TOS's handler here drops
@@ -171,6 +197,28 @@ UFW_SCREEN_XOR        equ (UFW_SCREEN_A ^ UFW_SCREEN_B)
 
 UFW_FB_SRC            equ $00FA8300           ; FRAMEBUFFER_ADDR
 
+; --- YM2149 sound chip (single-channel A 4-bit DAC) ----------------
+;
+; PSG access: write a register number to $FFFF8800 (latch), then
+; write data to $FFFF8802. Reg 8 = ch A volume (low 4 bits). We
+; configure ch A as a "fake DAC": tone enabled, period = 0 (DC
+; clamp above the audio band so the volume register is the only
+; thing driving the output). Reg 8 stays latched after boot, so the
+; Timer-B handler just writes a single byte to YM_DATA per fire.
+YM_SELECT             equ $FFFF8800
+YM_DATA               equ $FFFF8802
+YM_REG_MIXER          equ 7                  ; tone+noise enables
+YM_REG_CHA_VOL        equ 8                  ; channel A volume (low 4 bits)
+YM_MIXER_DAC_CHA      equ $FE                ; tone A enabled, all other tones/noise off, ports out
+
+; Cart-shared audio sample buffer (mirrors AUDIO_BUFFER_ADDR /
+; AUDIO_BUFFER_SIZE in main.s and CART_AUDIO_BUFFER_OFFSET in
+; rp/src/include/cart_shared.h). 256 bytes of YM ch A volume
+; nibbles, filled by the RP and read by the Timer-B handler.
+AUDIO_BUFFER_ADDR     equ $00FA4100
+AUDIO_BUFFER_SIZE     equ 256
+AUDIO_BUFFER_END      equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)
+
 ; Number of 320-px lines the cart->ST blit covers per frame. Full ST
 ; low-res is 200; copying fewer leaves the bottom band of the
 ; destination ST page untouched (useful for a status row or to bound
@@ -191,8 +239,17 @@ MFP_IERB              equ $FFFFFA09          ; interrupt enable B
 MFP_ISRA              equ $FFFFFA0F          ; in-service A (Timer-A ack = bit 5)
 MFP_IMRA              equ $FFFFFA13          ; interrupt mask A
 MFP_IMRB              equ $FFFFFA15          ; interrupt mask B
+MFP_VR                equ $FFFFFA17          ; vector register (high nibble = vector base, bit 3 = S: 1=software EOI, 0=auto-EOI)
 MFP_TACR              equ $FFFFFA19          ; Timer-A control register (cleared at boot for safety)
-MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (cleared at boot for safety)
+MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (delay-mode + prescaler)
+MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit countdown)
+
+; Timer-B audio rate. MFP master clock = 2.4576 MHz. We pick a /4
+; prescaler with count 98:
+;   f = 2.4576 MHz / (4 * 98) = 6269 Hz
+; close to the STE DMA "low" sampling rate of 6258 Hz (0.18% off).
+TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
+TIMERB_COUNT          equ 98                 ; ~6269 Hz
 
 ; IRQ vector slots we take over. $70 (VBL) already handled by the
 ; original userfw code path (D3 holds the save).
@@ -227,7 +284,8 @@ IKBD_WINDOW_BASE      equ $FB8200
 ;   offset 25: MFP IERB save (byte)
 ;   offset 26: MFP IMRA save (byte)
 ;   offset 27: MFP IMRB save (byte)
-;   offset 28-31: reserved / padding (longword align)
+;   offset 28: MFP VR save (byte) -- S-bit + vector base, switched to auto-EOI under userfw
+;   offset 29-31: reserved / padding (longword align)
 UFW_SAVE_SIZE         equ 32
 
     section text
@@ -274,11 +332,12 @@ userfw:
     move.l  VEC_TIMERB.w, 16(a5)
     move.l  VEC_TIMERA.w, 20(a5)
 
-    ; Save MFP IER / IMR for A and B (4 bytes).
+    ; Save MFP IER / IMR for A and B (4 bytes), plus VR (1 byte).
     move.b  MFP_IERA.w, 24(a5)
     move.b  MFP_IERB.w, 25(a5)
     move.b  MFP_IMRA.w, 26(a5)
     move.b  MFP_IMRB.w, 27(a5)
+    move.b  MFP_VR.w, 28(a5)             ; TOS uses S=1 (software EOI); we override below
 
     ; Install dummies at HBL / Timer-A / Timer-B / Timer-C / Timer-D
     ; / ACIA. userfw_dummy_irq is a single rte; PC-relative for the
@@ -298,12 +357,59 @@ userfw:
     clr.b   MFP_TBCR.w
     clr.b   MFP_TACR.w
 
-    ; Disable + mask everything in MFP A/B. No MFP IRQ ever fires
-    ; under userfw -- only the VBL ($70) at IPL 4 reaches the m68k.
+    ; Disable + mask everything in MFP A/B. We re-enable Timer-B
+    ; explicitly below; everything else stays off.
     clr.b   MFP_IERA.w
     clr.b   MFP_IERB.w
     clr.b   MFP_IMRA.w
     clr.b   MFP_IMRB.w
+
+    ; --- YM2149 init: ch A as a 4-bit DAC -----------------------
+    ; Single-channel fake-DAC: enable tone on ch A (mixer bit 0 = 0)
+    ; so the channel's output path is open, set its tone period to 0
+    ; (counter runs at max -> effectively DC above the audio band so
+    ; the volume register alone shapes the output), and latch reg 8
+    ; (ch A volume) -- subsequent writes to YM_DATA go straight to
+    ; the volume register. Initial volume = 0 (silence).
+    move.b  #YM_REG_MIXER, YM_SELECT.w
+    move.b  #YM_MIXER_DAC_CHA, YM_DATA.w  ; $FE: tone A enabled, ch B+C tones off, all noise off, ports out
+    move.b  #0, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R0 = ch A fine period
+    move.b  #1, YM_SELECT.w
+    move.b  #0, YM_DATA.w                 ; R1 = ch A coarse period
+    move.b  #YM_REG_CHA_VOL, YM_SELECT.w  ; latch reg 8 (next YM_DATA writes hit ch A volume)
+    move.b  #0, YM_DATA.w                 ; ch A vol = 0 (silence)
+
+    ; --- Timer-B setup (audio @ ~6.27 kHz, STE-low-like) ---------
+    ; Install our handler at $120 (overrides the dummy installed
+    ; above). Load count -> TBDR, then prescaler -> TBCR starts
+    ; the countdown. Enable + unmask Timer-B at the MFP. SR is
+    ; still IPL=7 at this point (set by `ori.w #$0700, sr` at the
+    ; very top of userfw), so no IRQ fires until SR is dropped to
+    ; $2300 below.
+    ;
+    ; Also flip the MFP Vector Register to AUTO-EOI mode (clear
+    ; the S bit, VR bit 3). With S=0 the MFP clears its own in-
+    ; service bit on each IACK cycle, so the Timer-B handler can
+    ; skip the explicit `move.b #$FE, MFP_ISRA.w` ACK -- saves
+    ; ~12 cyc per IRQ * ~125 IRQ/VBL = ~1500 cyc/VBL.
+    lea     userfw_timerb_audio(pc), a0
+    move.l  a0, VEC_TIMERB.w
+    move.b  28(a5), d0                    ; copy TOS's VR (saved above)
+    andi.b  #$F7, d0                      ; clear bit 3 (S) -> auto-EOI
+    move.b  d0, MFP_VR.w
+    move.b  #TIMERB_COUNT, MFP_TBDR.w
+    move.b  #TIMERB_PRESCALER, MFP_TBCR.w
+
+    ; Initialise A0 to the audio buffer base for the Timer-B handler.
+    ; A0 is NOT in the FBDRV_INLINE MOVEM list and no other code in
+    ; userfw touches it after this point, so the handler can rely on
+    ; A0 holding a valid cart-buffer pointer at all times -- saves
+    ; the push/pop around it in the hot IRQ path (-24 cyc/fire).
+    movea.l #AUDIO_BUFFER_ADDR, a0
+
+    bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
+    bset    #0, MFP_IMRA.w                ; Timer-B IRQ unmask (IMRA bit 0)
 
     ; Interrupts back on (caller's level, typically $2300).
     move.w  (sp)+, sr
@@ -319,49 +425,51 @@ userfw:
     move.b  #(UFW_SCREEN_A >> 16), VIDEO_BASE_ADDR_HIGH.w
 
     ; Pin IRQ state for the duration of .vbl_loop:
-    ;   - MFP IERA/IERB cleared: no MFP source (Timer-A/B/C/D, HBL,
-    ;     ACIA, etc.) can generate an interrupt request. Boot above
-    ;     already cleared these; reasserting here is a belt-and-
-    ;     suspenders guarantee.
-    ;   - SR = $2300: supervisor mode, IPL=3. Blocks levels 1-3 (HBL
-    ;     at IPL 2), allows VBL at IPL 4 and MFP at IPL 6. MFP can't
-    ;     fire anyway since IERA/IERB are 0, so in practice only the
-    ;     VBL ($70) IRQ reaches the m68k.
-    move.b  #0, MFP_IERA.w
-    move.b  #0, MFP_IERB.w
+    ;   SR = $2300: supervisor mode, IPL=3. Blocks levels 1-3 (HBL
+    ;   at IPL 2), allows VBL at IPL 4 and MFP at IPL 6. The only
+    ;   MFP source enabled is Timer-B (IERA/IMRA bit 0), so the
+    ;   m68k sees VBL + Timer-B IRQs.
     move.w  #$2300, sr
 
     ; --- Per-VBL loop ---
 .vbl_loop:
-    ; CPU-halt wait for the next vsync. `stop #$2300` loads SR with
-    ; #$2300 (supervisor, IPL=3) and halts the m68k until an IRQ at
-    ; level > 3 arrives. MFP IERA/IERB are all 0 so the only IRQ
-    ; that can fire is the VBL at IPL=4 -- when it does, userfw_vbl
-    ; runs and RTEs to the instruction below. No spin, no memory
-    ; traffic on the bus while we wait.
+    ; CPU-halt wait for the next vsync. The m68k `stop #$2300` halts
+    ; until an IRQ at level > 3 fires (VBL at IPL=4, MFP at IPL=6).
+    ; Because Timer-B (MFP) can be re-enabled for audio/IKBD work,
+    ; we can't assume the next wake is the VBL -- the userfw_vbl
+    ; handler clears UFW_VBL_FLAG, but the dummy MFP handlers do
+    ; not. After each wake we check the flag; if it's still set the
+    ; wake came from a non-VBL IRQ and we `stop` again.
+    move.w  #-1, UFW_VBL_FLAG.w
+.wait_vbl:
     stop    #$2300
+    tst.w   UFW_VBL_FLAG.w
+    bne.s   .wait_vbl
 
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
 
-    ; A5 = the screen page we are about to fill (loaded from the
-    ; RAM-resident UFW_SCREEN_PAGE). FBDRV_INLINE uses A5 as a
-    ; dst-pointer base with d16 displacements.
+    ; A5 = END of the screen page chunk-covered region. FBDRV_INLINE
+    ; uses predec MOVEM (`movem.l list, -(a5)`) and walks A5 backwards
+    ; from page_end down to page_start as it stores chunks in reverse
+    ; order. After FBDRV_MAIN_ITERS iters A5 ends at the page START,
+    ; which is the value .after_copy below expects in A5.
     movea.l UFW_SCREEN_PAGE, a5
+    lea     (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)(a5), a5
 
     ; Pure 68000 CPU copy via the FBDRV_INLINE macro (defined in
     ; the constants block). Same code path on plain ST / STE /
     ; MegaSTE / TT / Falcon -- no _MCH cookie dispatch, no STE
     ; blitter.
     ;
-    ; FBDRV_INLINE clobbers D0-D7, A0-A4, A6, A7. A7 (SP) is saved to
-    ; UFW_SP_SAVE and restored around the macro -- a VBL firing with
-    ; a corrupted A7 would push to a garbage SP and crash. A6 is the
-    ; macro's own src pointer (overwritten at macro entry) so no save
-    ; is needed. D0-D7 / A0-A4 are scratch and not consumed after.
+    ; FBDRV_INLINE clobbers D0-D7, A1-A4, A6. A0 and A7 (SP) are
+    ; PRESERVED (not in the MOVEM list): A0 holds the Timer-B
+    ; handler's dedicated audio buffer pointer (initialised at boot,
+    ; advances + wraps inside the handler), A7 keeps the supervisor
+    ; SP valid so IRQs can fire safely. A6 is the macro's own src
+    ; pointer (overwritten at macro entry) so no save is needed.
+    ; D0-D7 / A1-A4 are scratch and not consumed after.
     move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w  ; border = white (blit in flight)
-    move.l  a7, UFW_SP_SAVE
     FBDRV_INLINE                      ; inline cart->ST screen copy
-    movea.l UFW_SP_SAVE, a7
     move.w  #BLIT_MARK_DONE, PALETTE_IDX0.w     ; border = green (copy done)
 
 .after_copy:
@@ -407,6 +515,7 @@ userfw:
     move.b  25(a5), MFP_IERB.w
     move.b  26(a5), MFP_IMRA.w
     move.b  27(a5), MFP_IMRB.w
+    move.b  28(a5), MFP_VR.w             ; restore TOS's S=1 / vector base
 
     ; Restore the 6 vectors we overwrote.
     move.l  0(a5), VEC_HBL.w
@@ -434,9 +543,10 @@ userfw:
     rts
 
 ; -------------------------------------------------------------------
-; userfw_vbl -- minimal VBL interrupt handler. Just RTEs (wakes the
-; m68k from the `stop #$2300` in .vbl_loop). Uses zero registers,
-; zero stack beyond the SR+PC that the m68k pushed on IRQ entry.
+; userfw_vbl -- minimal VBL interrupt handler. Clears UFW_VBL_FLAG
+; so .vbl_loop's `stop`-then-check wait can distinguish a VBL wake
+; from a Timer-B (or other MFP) wake. Uses zero registers; the
+; m68k pushes only SR+PC on IRQ entry.
 ;
 ; This replaces TOS's VBL handler entirely while userfw is running,
 ; so mouse / cursor-blink / keyboard-repeat / _vblqueue all stop
@@ -444,6 +554,45 @@ userfw:
 ; buffer is no longer filled; ESC detection runs through the inline
 ; IKBD poll in FBDRV_INLINE.
 userfw_vbl:
+    clr.w   UFW_VBL_FLAG.w
+    rte
+
+; -------------------------------------------------------------------
+; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~6.27 kHz
+; (close to the STE DMA low sampling rate) when Timer-B is running
+; in /4 delay mode with TBDR=98.
+;
+; A0 is a DEDICATED audio buffer pointer initialised at boot
+; (movea.l #AUDIO_BUFFER_ADDR, a0). It is excluded from the
+; FBDRV_INLINE MOVEM list and from the macro's IKBD poll (which
+; uses A1 instead), and no other userfw code touches it -- so A0
+; survives across iterations without any save/restore here.
+;
+; Each fire: read the byte at (a0), write it to YM ch A volume,
+; bump A0 to the next sample, wrap from buffer end back to base.
+;
+; MFP is in auto-EOI mode (VR S=0) so the in-service bit clears
+; automatically on each IACK cycle -- no ISRA poke needed.
+;
+; Cycle budget (no-wrap path):
+;   move.b  (a0), YM_DATA.w               ; 16 cyc
+;   addq.l  #1, a0                         ;  8 cyc
+;   cmpa.l  #AUDIO_BUFFER_END, a0          ; 14 cyc
+;   bcs.s   .no_wrap                       ; 10 cyc
+;   ---                                    ; (skip movea on wrap path)
+;   rte                                    ; 20 cyc
+;   ---                                    ; 68 cyc/IRQ no-wrap
+; Wrap path adds 8 (bcs not taken) + 12 (movea imm) - 10 = +10 cyc
+; once every 256 fires -- ~0.05 cyc/IRQ amortized.
+; vs the previous A0-save/restore version at 100 cyc/IRQ: saves
+; ~32 cyc/fire * ~125 fires/VBL = ~4000 cyc/VBL (~500 us).
+userfw_timerb_audio:
+    move.b  (a0), YM_DATA.w
+    addq.l  #1, a0
+    cmpa.l  #AUDIO_BUFFER_END, a0
+    bcs.s   .no_wrap
+    movea.l #AUDIO_BUFFER_ADDR, a0
+.no_wrap:
     rte
 
 ; -------------------------------------------------------------------

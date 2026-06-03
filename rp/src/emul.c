@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "aconfig.h"
+#include "audio.h"
 #include "commemul.h"
 #include "debug.h"
 #include "fb.h"
@@ -72,6 +73,11 @@ void emul_start() {
     panic("fb_init failed");
   }
 
+  // Build the PCM-to-YM logarithmic LUT and start producing samples
+  // into the cart audio buffer at $FA4100. The m68k Timer-B IRQ in
+  // userfw.s reads from there at ~6.27 kHz.
+  audio_init();
+
   // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
   // GPIO 26). The main loop drains the ring directly into the IKBD
   // demux via commemul_poll(ikbd_consume_rom3_sample) -- no
@@ -118,5 +124,6 @@ void emul_start() {
     }
 
     fb_render_frame();
+    audio_render_frame();
   }
 }

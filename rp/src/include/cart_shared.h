@@ -54,11 +54,19 @@
 #define CART_SHARED_VARIABLES_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x10)
 #define CART_SHARED_VARIABLES_SLOTS      60      /* 240 bytes total */
 
-/* APP_FREE arena starts directly after SHARED_VARIABLES; the audio
- * pipeline (Epic 4) was removed and its 1 KB was rolled back into
- * the free arena. */
-#define CART_APP_FREE_OFFSET                                                  \
+/* Audio sample buffer. Single-channel YM2149 ch A 4-bit DAC: each
+ * byte holds a YM volume nibble (0..15) in its low 4 bits. The m68k
+ * Timer-B IRQ handler fires at ~6.27 kHz and reads one byte per
+ * fire, wrapping the read pointer at CART_AUDIO_BUFFER_SIZE. The
+ * RP-side audio.c fills the buffer with samples mapped through a
+ * logarithmic LUT (linear PCM -> closest matching YM volume). */
+#define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
+#define CART_AUDIO_BUFFER_SIZE           256
+
+/* APP_FREE arena starts after the audio buffer. */
+#define CART_APP_FREE_OFFSET                                                  \
+  (CART_AUDIO_BUFFER_OFFSET + CART_AUDIO_BUFFER_SIZE)
 
 /* Framebuffer sized for low-res 4 bpp (320 x 200 = 32000 bytes). Sits
  * flush against the top of the 64 KB region: end = $FB0000 exactly,
@@ -67,6 +75,68 @@
 #define CART_FRAMEBUFFER_SIZE         32000
 #define CART_FRAMEBUFFER_OFFSET       (0x10000 - CART_FRAMEBUFFER_SIZE)
 #define CART_REGION_END               0x10000  /* 64 KB shared region top */
+
+/* ---------------------------------------------------------------------
+ * Framebuffer chunk layout for the m68k MOVEM blit
+ *
+ * The m68k FBDRV_INLINE macro copies the cart framebuffer into a
+ * hidden ST screen page using a fully unrolled
+ *
+ *     movem.l (a6)+, d0-d7/a1-a4        ; read 48 bytes
+ *     movem.l d0-d7/a1-a4, -(a5)        ; predec store, reverse-order
+ *
+ * pair per iteration (A0 and A7 omitted from the list: A0 is the
+ * dedicated Timer-B audio buffer pointer, A7 keeps the supervisor
+ * SP valid so IRQs may fire during the macro). The predec store
+ * mode is 4 cycles per iter faster than `d16(a5)` displacement mode
+ * (8+8n vs 12+8n on 68000), but it writes each 12-longword group in
+ * REVERSE memory order relative to the source -- chunks land in the
+ * destination screen page from the END (page+31968) down to the
+ * START (page+0).
+ *
+ * For the screen to display the correct image, the cart-FB at
+ * $FA8300 must therefore be laid out with the image's 48-byte chunks
+ * already pre-reversed:
+ *
+ *     cart-FB chunk K (bytes K*48 .. K*48+47)
+ *       holds image chunk (665-K)
+ *
+ *   i.e.:
+ *     cart-FB bytes      0 ..    47   <-- image bytes 31920 .. 31967
+ *     cart-FB bytes     48 ..    95   <-- image bytes 31872 .. 31919
+ *     ...
+ *     cart-FB bytes  31920 .. 31967   <-- image bytes     0 ..    47
+ *     cart-FB bytes  31968 .. 31999   <-- natural-order 32-byte tail
+ *
+ * Within each 48-byte chunk the bytes are in natural order; only the
+ * chunk-level sequence is reversed.
+ *
+ * The 32-byte tail at image bytes 31968..31999 (= last 64 pixels of
+ * scanline 199) is handled by a separate small `d16(a5)` MOVEM
+ * after the main predec unroll, so the RP leaves those bytes in
+ * NATURAL (non-reversed) order at cart-FB[31968..31999].
+ *
+ * Chunks DO NOT align with scanlines (LCM(48, 160) = 480), so this
+ * is not a simple row reversal -- each m68k chunk covers exactly
+ * scanline (112 pixels at 4 bpp) and may span row boundaries. The
+ * RP-side c2p (rp/src/fb_chunked_asm.S + fb_chunked.c) is responsible
+ * for emitting the reversed layout. The simplest implementation is
+ * to keep c2p's natural row-major output going to a 32 KB scratch
+ * buffer in RP RAM, then do a chunk-reversed memcpy from scratch to
+ * the cart FB once both cores finish (~120 us / frame, well under
+ * fb_render_frame's main-loop budget). Per-byte address arithmetic
+ * inside the c2p hot path is also possible but more invasive.
+ *
+ * Cost / benefit:
+ *   - m68k saves ~4 cyc/iter * 571 iters = ~2284 cyc / VBL (~285 us)
+ *   - m68k boot adds one `lea (FB_CHUNK_COVERED)(a5), a5` per VBL (~12 cyc)
+ *   - RP adds ~120 us / frame for the scratch->cart-FB reverse memcpy
+ *   - Net: ~285 us VBL slack reclaimed on the m68k side
+ */
+#define CART_FB_CHUNK_BYTES           48   /* size of one m68k MOVEM-burst group (12 longwords; A0 and A7 omitted -- A0 is the dedicated Timer-B audio pointer, A7 is the SP) */
+#define CART_FB_CHUNK_COUNT           666  /* 666 * 48 = 31968 bytes of FB blitted per VBL */
+#define CART_FB_CHUNK_COVERED         (CART_FB_CHUNK_BYTES * CART_FB_CHUNK_COUNT)
+#define CART_FB_CHUNK_TAIL            (CART_FRAMEBUFFER_SIZE - CART_FB_CHUNK_COVERED)  /* 32 bytes copied by the m68k via an 8-longword d16(a5) MOVEM after the main predec unroll */
 
 /* RP→m68k command sentinel values. The m68k polls the longword at
  * CART_CMD_SENTINEL_OFFSET; non-zero values steer it out of the
