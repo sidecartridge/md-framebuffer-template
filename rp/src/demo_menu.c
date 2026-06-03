@@ -70,7 +70,7 @@ static void render_menu(void) {
 
   /* Menu items. */
   font_move(80, 76);
-  font_print("1.  Parallax scroll");
+  font_print("1.  Uridium scroll");
   font_move(80, 96);
   font_print("2.  3D scene");
   font_move(80, 116);
