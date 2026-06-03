@@ -37,6 +37,11 @@
 #include "pico/time.h"
 #include "uridium_surface.h"
 
+/* Per-file -O3: the global build is MinSizeRel (-Os); this file is pure
+ * compute (per-pixel parallax/sprite drawing), so optimise it for
+ * speed. No cart-bus / PIO timing code lives here. */
+#pragma GCC optimize("O3")
+
 extern const struct FB_FONT font8x8;
 
 /* Palette indices (this demo's own palette, installed at init). */

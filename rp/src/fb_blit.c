@@ -12,6 +12,11 @@
 
 #include "fb_chunked.h"
 
+/* Per-file -O3: the global build is MinSizeRel (-Os); these blit
+ * primitives are pure per-pixel compute on the draw path. No cart-bus /
+ * PIO timing code here. */
+#pragma GCC optimize("O3")
+
 /* Intersect [start, start + len) with [0, max) and return the clipped
  * length and the (positive) offset into the source. */
 static inline int clip_axis(int start, int len, int max, int *src_off) {

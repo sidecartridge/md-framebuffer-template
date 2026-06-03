@@ -37,6 +37,12 @@
 #include "cart_shared.h"
 #include "pico/multicore.h"
 
+/* Per-file -O3: the global build is MinSizeRel (-Os). The chunky->planar
+ * conversion + chunk-reversed memcpy here run on the hot per-frame path
+ * and are pure compute; the dual-core handshake uses blocking FIFO calls
+ * (real SDK calls with barriers), so -O3 is safe. */
+#pragma GCC optimize("O3")
+
 uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE] __attribute__((aligned(4)));
 
 /* Asm worker (fb_chunked_asm.S). Processes pixels in [src, src_end)

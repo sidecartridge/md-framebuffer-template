@@ -19,6 +19,11 @@
 #include "fb_chunked.h"
 #include "fb_font.h"
 
+/* Per-file -O3: the global build is MinSizeRel (-Os); the glyph
+ * rasteriser is pure per-pixel compute on the draw path. No cart-bus /
+ * PIO timing code here. */
+#pragma GCC optimize("O3")
+
 /* Renderer state declared extern in fb_font.h. */
 struct FB_FONT const *font;
 unsigned int font_x, font_y;
