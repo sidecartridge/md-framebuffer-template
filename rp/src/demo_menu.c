@@ -38,19 +38,21 @@ typedef enum {
 static demo_state_t s_state;
 static const demo_module_t *s_active;
 
-#define MENU_ITEM_COUNT 3
+#define MENU_ITEM_COUNT 4
 static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
     &demo_parallax,
     &demo_3d,
     &demo_sprites,
+    &demo_cojorotozoom,
 };
 
-/* IKBD scancodes for the menu hotkeys. ESC = $01 already used as
- * the back/exit key; 1/2/3 = $02/$03/$04 on the unshifted top row. */
+/* IKBD scancodes for the menu hotkeys. ESC = $01 is the back/exit
+ * key; 1/2/3/4 = $02/$03/$04/$05 on the unshifted top row. */
 #define IKBD_SC_ESC 0x01u
 #define IKBD_SC_1   0x02u
 #define IKBD_SC_2   0x03u
 #define IKBD_SC_3   0x04u
+#define IKBD_SC_4   0x05u
 
 static void render_menu(void) {
   /* Background = palette idx 15 (black per the default palette);
@@ -75,11 +77,12 @@ static void render_menu(void) {
   font_print("2.  3D scene");
   font_move(80, 116);
   font_print("3.  Multi-sprite swarm");
+  font_move(80, 136);
+  font_print("4.  Cojorotozoom");
 
-  /* Footer hint. At 8px/char the 38-char line is 304px wide, so it
-   * starts at x=8 to clear the right edge (8..312 of 320). */
+  /* Footer hint. */
   font_move(8, 168);
-  font_print("Press 1-3 to start, ESC to exit to GEM");
+  font_print("Press 1-4 to start, ESC to exit to GEM");
 
   fb_publish();
 }
@@ -120,7 +123,8 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
         break;
       case IKBD_SC_1:
       case IKBD_SC_2:
-      case IKBD_SC_3: {
+      case IKBD_SC_3:
+      case IKBD_SC_4: {
         unsigned idx = (unsigned)(k->scancode - IKBD_SC_1);
         if (idx < MENU_ITEM_COUNT) {
           s_active = s_menu[idx];

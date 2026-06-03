@@ -53,10 +53,11 @@ typedef struct {
   void (*teardown)(void);
 } demo_module_t;
 
-/* The three Epic-5 demos. Each lives in its own .c file. */
+/* The Epic-5 demos. Each lives in its own .c file. */
 extern const demo_module_t demo_parallax;
 extern const demo_module_t demo_3d;
 extern const demo_module_t demo_sprites;
+extern const demo_module_t demo_cojorotozoom;
 
 /* Dispatcher entry points. Call init() once at boot; call
  * handle_key() for every popped IKBD event and render_frame() once

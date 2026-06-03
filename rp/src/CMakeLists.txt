@@ -115,6 +115,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         demo_parallax.c
         demo_3d.c
         demo_sprites.c
+        demo_cojorotozoom.c
         reset.c
         romemul.c
         sdcard.c
