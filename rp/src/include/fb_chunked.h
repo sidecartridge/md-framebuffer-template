@@ -77,6 +77,19 @@ static inline void fb_chunked_plot(unsigned int x, unsigned int y,
  */
 void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar);
 
+/* Split halves of the above, so the slow transpose can run before the
+ * VBL wait (overlapping the m68k blit) and only the fast cart-FB write
+ * runs after it. fb.c's fb_publish() uses these directly. */
+
+/* Dual-core transpose: chunked buffer -> internal planar scratch (RP
+ * RAM). Does NOT touch the cart FB; safe to run while the m68k blits. */
+void __not_in_flash_func(fb_transpose)(void);
+
+/* Chunk-reversed copy of the last transpose's scratch -> `planar` (the
+ * cart FB). The ONLY cart-FB write; ~120 us. Call after fb_transpose()
+ * and after the m68k has finished blitting the previous frame. */
+void __not_in_flash_func(fb_planar_publish)(uint16_t *planar);
+
 #ifdef __cplusplus
 }
 #endif

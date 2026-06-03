@@ -67,6 +67,16 @@ void emul_start() {
     panic("init_romemul failed: PIO/DMA claim or program load returned <0");
   }
 
+  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring) BEFORE
+  // fb_init: fb_init's first fb_publish() drains the ROM3 ring while it
+  // waits for the m68k's VBL ack, so the ring must already exist. (At
+  // boot the m68k may not be emitting acks yet; the first publish just
+  // times out after ~33 ms and proceeds.) The main loop drains the
+  // ring via fb_pump_rom3() -> IKBD demux + VBL frame-sync.
+  if (commemul_init() < 0) {
+    panic("commemul_init failed: PIO/DMA claim or program load returned <0");
+  }
+
   // Initialise the 32 KB low-res framebuffer (320x200, 4 bpp). Sets
   // up `fb_screen` for the font/draw primitives, clears the FB to
   // black (0xFF -> palette index 15 on the default TOS palette), and
@@ -89,15 +99,6 @@ void emul_start() {
   // silent until a callback is installed; the playback source is
   // chosen below, after the SD card has had a chance to mount.
   audio_init();
-
-  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
-  // GPIO 26). The main loop drains the ring directly into the IKBD
-  // demux via commemul_poll(ikbd_consume_rom3_sample) -- no
-  // command-dispatch middleware. Apps that need a richer command
-  // channel can wrap commemul_poll with their own callback.
-  if (commemul_init() < 0) {
-    panic("commemul_init failed: PIO/DMA claim or program load returned <0");
-  }
 
   // SD card -- best-effort. Apps that need persistent storage can
   // ignore the failure path or treat it as fatal. The folder name is
@@ -145,7 +146,7 @@ void emul_start() {
   //      userfw.s blits this into an ST screen page once per VBL.
   DPRINTF("Entering main loop\n");
   while (true) {
-    commemul_poll(ikbd_consume_rom3_sample);
+    fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
     ikbd_pump();
 
     ikbd_key_event_t k;

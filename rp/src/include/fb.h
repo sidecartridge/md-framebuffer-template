@@ -70,16 +70,39 @@ void fb_render_static(void);
  *         main loop at any cadence. */
 void fb_render_frame(void);
 
-/** @brief Publish the current contents of `fb_chunked_buffer` to the
- *         cart framebuffer: runs chunky-to-planar (with the dual-core
- *         dispatch + chunk-reversal) and then advances FB_FRAME_COUNTER
- *         so the m68k VBL loop sees a new frame.
+/** @brief Publish the current chunked buffer to the cart framebuffer,
+ *         synchronized to the Atari's 50 Hz VBL, tear-free.
  *
- *         Apps / demo modules call this once per main-loop iteration
- *         after drawing into the chunked buffer; do NOT call from
- *         multiple paths in the same loop iteration (each call costs
- *         ~1 ms of c2p + memcpy work). */
+ *         Three steps: (1) transpose chunked -> planar SCRATCH (RP RAM,
+ *         the slow ~1 ms part) -- this overlaps the m68k's blit of the
+ *         previous frame since it doesn't touch the cart FB; (2) BLOCK
+ *         until the m68k acks it finished that blit (a cart-bus read at
+ *         $FB8400 captured by commemul) so the cart FB is free; (3) do
+ *         the fast ~120 us chunk-reversed copy scratch -> cart FB and
+ *         bump FB_FRAME_COUNTER.
+ *
+ *         Because only the short copy in step 3 writes the cart FB, and
+ *         it runs in the m68k's post-blit slack, the RP never writes
+ *         the FB while the m68k reads it -- no tearing, full 50 Hz. A
+ *         ~60 ms timeout (safety net for "m68k not running", e.g. at
+ *         boot) keeps the RP from hanging. Drawing into
+ *         `fb_chunked_buffer` (RP RAM) is unsynchronized; call this
+ *         once per frame after drawing. */
 void fb_publish(void);
+
+/** @brief Drain the ROM3 commemul ring once, routing each captured
+ *         sample to BOTH the IKBD demux and the VBL frame-sync
+ *         detector. Call from the main loop in place of a bare
+ *         commemul_poll(); fb_publish() also calls it internally while
+ *         waiting for the VBL ack, so IKBD/ESC stay responsive during
+ *         the wait. */
+void fb_pump_rom3(void);
+
+/** @brief Microseconds the most recent fb_publish() spent in the
+ *         chunky-to-planar conversion (dual-core c2p + chunk-reversed
+ *         memcpy). Updated every fb_publish(); stale-by-one is fine
+ *         for an on-screen timing readout. */
+uint32_t fb_last_convert_us(void);
 
 #ifdef __cplusplus
 }

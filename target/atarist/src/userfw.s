@@ -305,6 +305,16 @@ VEC_TIMERA            equ $134
 ; bits.
 IKBD_WINDOW_BASE      equ $FB8200
 
+; VBL frame-sync ack (Epic 5). After each blit completes (.after_copy)
+; the m68k does a single dummy cart-bus read at VBLSYNC_ADDR to tell
+; the RP "the blit is done, the cart framebuffer is free to overwrite".
+; The m68k cannot WRITE the shared region (it's ROM from the m68k
+; side), so the ack must be a READ captured by the RP's commemul ring
+; -- the same mechanism IKBD uses. Distinct high byte ($84) from the
+; IKBD window ($82) so the RP can tell the two apart. The value read
+; is irrelevant; only the address matters.
+VBLSYNC_ADDR          equ $FB8400
+
 ; Save area for vectors + MFP regs we'll restore on ESC exit. Lives
 ; in the top 32 bytes of the 4 KB copied-code area below ST screen
 ; memory (pre_auto in main.s relocates start_rom_code..end_rom_code
@@ -557,6 +567,13 @@ userfw:
     move.l  a5, d0
     eor.l   #UFW_SCREEN_XOR, d0
     move.l  d0, UFW_SCREEN_PAGE
+
+    ; Frame-sync ack (Epic 5): one cart-bus read tells the RP the blit
+    ; is finished and the cart FB is free to overwrite. Emitted every
+    ; VBL (the FB is free here -- blit done, page flipped). The RP's
+    ; commemul ring captures the read; fb_publish() on the RP blocks
+    ; until it sees this before running the next chunky-to-planar.
+    tst.b   VBLSYNC_ADDR
 
 .input_check:
     ; ESC detection (Story 3.5): the RP-side IKBD demux writes

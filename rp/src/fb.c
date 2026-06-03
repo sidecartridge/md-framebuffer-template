@@ -15,12 +15,33 @@
 #include <string.h>
 
 #include "cart_shared.h"
+#include "commemul.h"
 #include "debug.h"
 #include "fb_blit.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
 #include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
+#include "ikbd.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
+
+/* VBL frame-sync (Epic 5). The m68k does a cart-bus read at
+ * $FB8400 after each blit (see VBLSYNC_ADDR in userfw.s); the
+ * commemul ring captures it with low-16 = 0x84xx. fb_pump_rom3
+ * routes ROM3 samples to both the IKBD demux and this detector;
+ * fb_publish() blocks until s_vbl_seen advances before overwriting
+ * the cart FB. The ~33 ms timeout keeps the RP from hanging if the
+ * m68k isn't emitting acks (e.g. before it boots). */
+#define FB_VBLSYNC_HIBYTE   0x8400u
+#define FB_VBLSYNC_HIMASK   0xFF00u
+/* Safety net only: must comfortably exceed the worst-case latency from
+ * "counter bumped" to "m68k VBLSYNC" (up to ~2 VBLs = 40 ms when c2p
+ * overruns the slack and the m68k skips a frame). Firing early would
+ * let the next c2p race the blit -- so keep it generous; it should
+ * never fire while the m68k is actually running. */
+#define FB_VSYNC_TIMEOUT_US 60000u
+
+static volatile uint32_t s_vbl_seen;
+static uint32_t s_vbl_published;
 
 /* Story 2.3 demo sprite. Multi-colour 16x16 ball with a transparent
  * background (key = 0xFF; transparent corners give it a rounded look
@@ -231,20 +252,50 @@ void fb_render_frame(void) {
   last_frame_us = time_us_32() - t_frame_start;
 }
 
+/* ROM3 ring dispatch: route each captured cart-bus read to the IKBD
+ * demux and to the VBL frame-sync detector. */
+static void fb_rom3_dispatch(uint16_t sample) {
+  ikbd_consume_rom3_sample(sample);
+  if ((sample & FB_VBLSYNC_HIMASK) == FB_VBLSYNC_HIBYTE) {
+    s_vbl_seen++;
+  }
+}
+
+void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }
+
 void fb_publish(void) {
-  /* Transpose chunked -> planar into the cart framebuffer (dual-core
-   * c2p + chunk-reversed memcpy; see fb_chunked.c). */
-  uint32_t t_conv_start = time_us_32();
-  fb_chunky_to_planar((uint16_t *)fb_screen.framebuffer);
-  last_convert_us = time_us_32() - t_conv_start;
+  /* 1. Transpose chunked -> planar SCRATCH (RP RAM, dual-core). This is
+   *    the slow part (~1 ms) but it does NOT touch the cart FB, so it
+   *    runs unsynchronized and overlaps the m68k's blit of the previous
+   *    frame. */
+  uint32_t t0 = time_us_32();
+  fb_transpose();
+  uint32_t transpose_us = time_us_32() - t0;
+
+  /* 2. Block until the m68k has finished blitting the previous frame
+   *    (its VBLSYNC ack) so the cart FB is free to overwrite. Drain the
+   *    ROM3 ring meanwhile so IKBD / ESC stay live; the timeout is a
+   *    safety net for "m68k not running" (e.g. at boot). */
+  uint32_t t_wait = time_us_32();
+  while (s_vbl_seen == s_vbl_published) {
+    fb_pump_rom3();
+    if (time_us_32() - t_wait > FB_VSYNC_TIMEOUT_US) {
+      break;
+    }
+  }
+  s_vbl_published = s_vbl_seen;
+
+  /* 3. Publish: fast chunk-reversed memcpy scratch -> cart FB. This is
+   *    the only cart-FB write and it's short (~120 us), so it fits in
+   *    the m68k's post-blit slack -- no overrun, no tearing, full 50 Hz.
+   *    Mark the frame ready as the last write (barrier first). */
+  uint32_t t1 = time_us_32();
+  fb_planar_publish((uint16_t *)fb_screen.framebuffer);
+  last_convert_us = transpose_us + (time_us_32() - t1);
 
   fb_frame_tick++;
-
-  /* Publish the new frame counter as the LAST write of this frame.
-   * The memory barrier ensures every preceding FB write has committed
-   * to the RP2040 bus before the m68k can observe the new counter
-   * value -- otherwise the m68k VBL loop could read counter=N and
-   * blit a half-finished frame. */
   __sync_synchronize();
   *fb_frame_counter = fb_frame_tick;
 }
+
+uint32_t fb_last_convert_us(void) { return last_convert_us; }

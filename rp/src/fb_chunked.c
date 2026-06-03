@@ -79,7 +79,7 @@ void fb_chunked_clear(uint8_t color) {
   memset(fb_chunked_buffer, color, sizeof(fb_chunked_buffer));
 }
 
-void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
+void __not_in_flash_func(fb_transpose)(void) {
   /* Dispatch bottom half to Core 1. Both cores write into the
    * scratch buffer (natural row-major layout). The push is "blocking"
    * in name but non-blocking in practice: we only ever have one
@@ -97,12 +97,16 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
    * Core 1's planar writes are guaranteed visible to Core 0 by the
    * time this returns. */
   (void)multicore_fifo_pop_blocking();
+}
 
+void __not_in_flash_func(fb_planar_publish)(uint16_t *planar) {
   /* Chunk-reversed publish from scratch -> cart FB. cart-FB chunk K
-   * (bytes K*56..K*56+55) is filled with scratch chunk (570-K), so
-   * the m68k's predec MOVEM blit lands each chunk at its natural
-   * image position. The body unrolls cleanly: 56 bytes = 14 longword
-   * copies per chunk. */
+   * is filled with scratch chunk (last-1-k), so the m68k's predec
+   * MOVEM blit lands each chunk at its natural image position. This is
+   * the ONLY cart-FB write -- it must run in the m68k's post-blit slack
+   * (gated by fb_publish's VBL wait), and it's fast (~120 us) so it
+   * fits. The slow transpose above runs unsynchronized (RP scratch
+   * RAM) and overlaps the m68k blit. */
   const uint8_t *scratch_bytes = (const uint8_t *)fb_planar_scratch;
   uint8_t *cart_bytes = (uint8_t *)planar;
   for (uint32_t k = 0; k < CART_FB_CHUNK_COUNT; k++) {
@@ -113,13 +117,18 @@ void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
     memcpy(dst_chunk, src_chunk, CART_FB_CHUNK_BYTES);
   }
 
-  /* Tail: the final CART_FB_CHUNK_TAIL bytes of the image (bottom-right
-   * 48 pixels at 4 bpp) don't fit into any 56-byte MOVEM chunk, so the
-   * m68k handles them with a small fixed-size MOVEM at the end of
-   * FBDRV_INLINE using d16(a5) addressing. That post-loop MOVEM reads
-   * from cart-FB[31976..31999] in NATURAL (non-reversed) order -- copy
-   * them straight from scratch. */
+  /* Tail: the final CART_FB_CHUNK_TAIL bytes (bottom-right pixels)
+   * don't fit a MOVEM chunk; the m68k copies them with a d16(a5) MOVEM
+   * in NATURAL order, so copy them straight from scratch. */
   memcpy(cart_bytes + CART_FB_CHUNK_COVERED,
          scratch_bytes + CART_FB_CHUNK_COVERED,
          CART_FB_CHUNK_TAIL);
+}
+
+void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
+  /* Convenience wrapper: transpose then publish in one call (no VBL
+   * sync). fb.c's fb_publish() calls the two halves separately so the
+   * transpose can overlap the m68k blit and only the publish waits. */
+  fb_transpose();
+  fb_planar_publish(planar);
 }
