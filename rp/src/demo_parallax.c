@@ -34,6 +34,7 @@
 #include "fb_chunked.h"
 #include "fb_font.h"
 #include "palette.h"
+#include "pico/platform.h"
 #include "pico/time.h"
 #include "uridium_surface.h"
 
@@ -215,7 +216,7 @@ static void parallax_handle_key(const ikbd_key_event_t *k) {
 
 /* Draw a 3x3 bolted plate (dark rivet plate + bright bolt head)
  * centred on (cx, cy). fb_chunked_plot clips at the edges. */
-static void draw_bolt(int cx, int cy) {
+static void __not_in_flash_func(draw_bolt)(int cx, int cy) {
   for (int dy = -1; dy <= 1; dy++) {
     for (int dx = -1; dx <= 1; dx++) {
       fb_chunked_plot((unsigned)(cx + dx), (unsigned)(cy + dy),
@@ -228,7 +229,7 @@ static void draw_bolt(int cx, int cy) {
  * `go`; horizontal beams scroll up by `vo`. Each beam is an embossed
  * 3px strip (lit edge / mottled body / shadow edge); joints get a
  * bolted plate. */
-static void draw_grid(int go, int vo) {
+static void __not_in_flash_func(draw_grid)(int go, int vo) {
   int x0 = (GRID_CELL - go) % GRID_CELL;  /* first vertical beam   */
   int y0 = (GRID_CELL - vo) % GRID_CELL;  /* first horizontal beam */
 
@@ -267,7 +268,7 @@ static void draw_grid(int go, int vo) {
  * crossings flow along it. Only line pixels are written (cells stay
  * open). The +4096 keeps the "\" term non-negative before the mask
  * (multiple of the spacing -> same residue). */
-static void draw_diag(uint32_t f) {
+static void __not_in_flash_func(draw_diag)(uint32_t f) {
   int o = (int)((2u * (uint32_t)DIAG_SPEED * f) & (uint32_t)DIAG_MASK);
   for (int y = 0; y < FB_CHUNKED_H; y++) {
     uint8_t *row = fb_chunked_buffer + y * FB_CHUNKED_W;
@@ -284,7 +285,7 @@ static void draw_diag(uint32_t f) {
 /* Draw the scrolling surface band. For each screen column the source
  * column wraps over the 3344-wide strip; black (code 0) is left
  * transparent so the starfield underneath shows through. */
-static void draw_surface(int xoff) {
+static void __not_in_flash_func(draw_surface)(int xoff) {
   for (int x = 0; x < FB_CHUNKED_W; x++) {
     int sc = x + xoff;
     if (sc >= URIDIUM_SURFACE_W) sc -= URIDIUM_SURFACE_W;
@@ -301,7 +302,7 @@ static void draw_surface(int xoff) {
   }
 }
 
-static void parallax_render_frame(void) {
+static void __not_in_flash_func(parallax_render_frame)(void) {
   uint32_t t0 = time_us_32();
   uint32_t f = s_frame++;
 
