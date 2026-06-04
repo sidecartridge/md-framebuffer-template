@@ -32,7 +32,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
 
     - name: Install AtariST Toolkit Docker image
-      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.0.0/install_atarist_toolkit_docker.sh | bash
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
 
     - name: Run - remove interactive
       run: sed -i 's/-it//' /usr/local/bin/stcmd
@@ -41,10 +41,13 @@ jobs:
       run: |
         pip install boto3
           
-    - name: Run - Build PICO_W release version
+    - name: Resolve APP_UUID (falls back to the dev UUID when no secret is set)
       env:
-        APP_UUID: ${{ secrets.APP_UUID }}
-      run: ./build.sh pico_w Release ${APP_UUID:-44444444-4444-4444-8444-444444444444}
+        APP_UUID_SECRET: ${{ secrets.APP_UUID }}
+      run: echo "APP_UUID=${APP_UUID_SECRET:-44444444-4444-4444-8444-444444444444}" >> "$GITHUB_ENV"
+
+    - name: Run - Build PICO_W release version
+      run: ./build.sh pico_w Release "$APP_UUID"
 
     - name: Get current date
       id: build
@@ -85,6 +88,9 @@ jobs:
         make_latest: true
 
     - name: Upload artifacts to S3
+      # Skip S3 publishing for development builds (the dev UUID). A real
+      # release sets the APP_UUID secret to the app's own UUID.
+      if: env.APP_UUID != '44444444-4444-4444-8444-444444444444'
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
