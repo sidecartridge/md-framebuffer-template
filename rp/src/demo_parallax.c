@@ -346,14 +346,16 @@ static void __not_in_flash_func(parallax_render_frame)(void) {
   font_align(FONT_ALIGN_LEFT);
   font_move(8, 6);
   font_print("URIDIUM  UP/DN=FLY  ESC=MENU");
-  font_move(8, 16);
-  font_print("DRAW ");
-  font_print(u32str(s_prev_draw_us, num, sizeof(num)));
-  font_print(" US");
-  font_move(8, 26);
-  font_print("C2P  ");
-  font_print(u32str(s_prev_cv_us, num, sizeof(num)));
-  font_print(" US");
+  if (g_show_timing) {
+    font_move(8, 16);
+    font_print("DRAW ");
+    font_print(u32str(s_prev_draw_us, num, sizeof(num)));
+    font_print(" US");
+    font_move(8, 26);
+    font_print("C2P  ");
+    font_print(u32str(s_prev_cv_us, num, sizeof(num)));
+    font_print(" US");
+  }
 
   uint32_t draw_us = time_us_32() - t0;
   fb_publish();
