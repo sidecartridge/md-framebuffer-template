@@ -1,9 +1,12 @@
 # Example: hello_text
 
 The smallest "real app" on this template — bounces **"HELLO ATARI ST"**
-around the 320×200 colour screen (with the baked-in jingle playing). It's
-the template with the demos stripped out, so it shows the minimal shape:
-clear → draw → animate → `fb_publish()`.
+around the 320×200 colour screen (with the baked-in jingle playing) and
+prints a **`DRAW` / `C2P` microsecond readout** in the top-left, the same
+debug numbers the demos show (`DRAW` = time drawing the frame, `C2P` =
+the chunky→planar cost of `fb_publish()`). It's the template with the
+demos stripped out, so it shows the minimal shape: clear → draw → animate
+→ `fb_publish()`.
 
 ## What's here
 
