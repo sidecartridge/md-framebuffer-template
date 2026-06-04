@@ -20,14 +20,15 @@
  * output into `fb_planar_scratch` in RP RAM. Once both halves are
  * complete, fb_chunky_to_planar copies the planar bytes into the
  * caller's `planar` (the cart framebuffer at $FA8300) with the
- * 56-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
+ * 48-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
  * macro uses `movem.l list, -(a5)` predec stores, which land each
  * chunk in the destination ST page in reverse memory order. See the
  * "Framebuffer chunk layout for the m68k MOVEM blit" comment in
  * cart_shared.h for the full spec.
  *
  * Expected wallclock: ~1.0-1.3 ms per frame for the dual-core c2p
- * + ~60-120 us for the chunk-reversed copy (571 * 56-byte memcpys).
+ * + the chunk-reversed copy (666 * 48-byte chunks via the ldmia/stmia
+ * asm worker fb_chunk_reverse_copy48).
  */
 
 #include "fb_chunked.h"
@@ -105,23 +106,32 @@ void __not_in_flash_func(fb_transpose)(void) {
   (void)multicore_fifo_pop_blocking();
 }
 
+/* Thumb asm (fb_chunked_asm.S): the chunk-reversed copy via ldmia/stmia.
+ * Replaces a per-chunk memcpy() loop -- GCC at -O3 can't prove the
+ * uint8_t* pointers are word-aligned and emitted a `bl memcpy` per chunk
+ * (666/frame); the cart FB + scratch are in fact 4-byte aligned. */
+extern void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
+                                    uint32_t count);
+_Static_assert(CART_FB_CHUNK_BYTES == 48,
+               "fb_chunk_reverse_copy48 hard-codes 48-byte (12-word) chunks");
+
 void __not_in_flash_func(fb_planar_publish)(uint16_t *planar) {
   /* Chunk-reversed publish from scratch -> cart FB. cart-FB chunk K
    * is filled with scratch chunk (last-1-k), so the m68k's predec
    * MOVEM blit lands each chunk at its natural image position. This is
    * the ONLY cart-FB write -- it must run in the m68k's post-blit slack
-   * (gated by fb_publish's VBL wait), and it's fast (~120 us) so it
-   * fits. The slow transpose above runs unsynchronized (RP scratch
-   * RAM) and overlaps the m68k blit. */
+   * (gated by fb_publish's VBL wait), and it's fast so it fits. The slow
+   * transpose above runs unsynchronized (RP scratch RAM) and overlaps
+   * the m68k blit. */
   const uint8_t *scratch_bytes = (const uint8_t *)fb_planar_scratch;
   uint8_t *cart_bytes = (uint8_t *)planar;
-  for (uint32_t k = 0; k < CART_FB_CHUNK_COUNT; k++) {
-    const uint8_t *src_chunk =
-        scratch_bytes +
-        (CART_FB_CHUNK_COUNT - 1u - k) * (uint32_t)CART_FB_CHUNK_BYTES;
-    uint8_t *dst_chunk = cart_bytes + k * (uint32_t)CART_FB_CHUNK_BYTES;
-    memcpy(dst_chunk, src_chunk, CART_FB_CHUNK_BYTES);
-  }
+
+  /* src_last points at the final scratch chunk; the asm walks it back one
+   * chunk per iteration, copying each 48-byte chunk forward. */
+  fb_chunk_reverse_copy48(cart_bytes,
+                          scratch_bytes + (CART_FB_CHUNK_COUNT - 1u) *
+                                              (uint32_t)CART_FB_CHUNK_BYTES,
+                          CART_FB_CHUNK_COUNT);
 
   /* Tail: the final CART_FB_CHUNK_TAIL bytes (bottom-right pixels)
    * don't fit a MOVEM chunk; the m68k copies them with a d16(a5) MOVEM
