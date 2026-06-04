@@ -25,6 +25,7 @@
 #ifndef DEMO_H_INCLUDED
 #define DEMO_H_INCLUDED
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "ikbd.h"
@@ -65,6 +66,11 @@ extern const demo_module_t demo_cojorotozoom;
 void demo_dispatcher_init(void);
 void demo_dispatcher_handle_key(const ikbd_key_event_t *k);
 void demo_dispatcher_render_frame(void);
+
+/* Shared DRAW/C2P timing readout toggle (the hidden 'D' key, handled by
+ * the dispatcher in any state). The menu and every demo gate their µs
+ * readout on this. Defined in demo_menu.c; starts ON. */
+extern bool g_show_timing;
 
 #ifdef __cplusplus
 }

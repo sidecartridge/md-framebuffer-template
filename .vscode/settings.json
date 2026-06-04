@@ -52,5 +52,20 @@
     "C_Cpp.codeAnalysis.clangTidy.checks.disabled": [],
     "C_Cpp.codeAnalysis.clangTidy.args": [
         "--extra-arg=-ferror-limit=1"
-    ]
+    ],
+    // --- Git extension: stop the index.lock churn ---
+    // VSCode auto-refreshes git status on every file change / window
+    // focus. During a burst of changes (e.g. a branch checkout, or a tool
+    // editing many files) it fires `git status` rapidly and can leave a
+    // stale .git/index.lock, which then collides with command-line git
+    // ("fatal: Unable to create '.git/index.lock': File exists"). Turning
+    // off the automatic refresh + periodic fetch removes that churn; use
+    // the Source Control panel's refresh button when you want to update it
+    // manually (it still updates after you stage/commit from the UI).
+    "git.autorefresh": false,
+    "git.autofetch": false,
+    // Don't auto-open/scan the bundled SDK submodules as separate repos
+    // (more background git processes on a large tree).
+    "git.detectSubmodules": false,
+    "git.scanRepositories": []
 }
