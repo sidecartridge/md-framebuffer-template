@@ -162,8 +162,19 @@ frame, so calling it once per loop naturally paces your app to 50 Hz.
 
 ## 4. Your first app — moving text
 
-Replace the demo block in `rp/src/emul.c`'s main loop with this. It
-bounces a string around the screen:
+This whole section is a ready-to-build app in **`examples/hello_text/`**.
+From a fresh checkout, `apply.sh` backs up `rp/` to `rp.bak` and swaps in
+the stripped app:
+
+```bash
+examples/hello_text/apply.sh    # backup rp/ -> rp.bak, strip demos, install
+./build.sh pico_w release 44444444-4444-4444-8444-444444444444
+# revert any time:  rm -rf rp && mv rp.bak rp
+```
+
+Here it is — replace the demo block in `rp/src/emul.c`'s main loop with
+this. It bounces a string around the screen and prints a `DRAW`/`C2P`
+microsecond readout (the same debug numbers the demos show):
 
 ```c
 #include "fb.h"
@@ -172,6 +183,15 @@ bounces a string around the screen:
 #include "palette.h"
 #include "ikbd.h"
 #include "audio.h"
+#include "pico/time.h"
+
+// fb_font has no printf -- tiny uint32 -> string helper for the readout.
+static const char *u32str(uint32_t n, char *buf, int sz) {
+    char *p = buf + sz; *--p = '\0';
+    if (!n) *--p = '0';
+    else while (n) { *--p = (char)('0' + n % 10); n /= 10; }
+    return p;
+}
 
 // ... inside emul_start(), after fb_init / audio_init / etc. ...
 
@@ -179,6 +199,8 @@ palette_init();
 font_set_font(&font8x8);
 
 int x = 100, y = 90, dx = 2, dy = 1;
+uint32_t prev_draw_us = 0, prev_cv_us = 0;   // previous frame's timings
+char num[11];
 
 while (true) {
     fb_pump_rom3();   // keyboard + VBL sync plumbing -- keep this
@@ -192,24 +214,37 @@ while (true) {
         }
     }
 
+    uint32_t t0 = time_us_32();       // start of this frame's drawing
+
     // --- draw one frame ---
     fb_chunked_clear(15);            // clear to palette index 15 (black)
     font_set_color(0);               // white
     font_move((unsigned)x, (unsigned)y);
     font_print("HELLO ATARI ST");
 
+    // DRAW + C2P microsecond readout (previous frame's numbers)
+    font_move(8, 6);
+    font_print("DRAW "); font_print(u32str(prev_draw_us, num, sizeof num));
+    font_print(" C2P "); font_print(u32str(prev_cv_us, num, sizeof num));
+    font_print(" US");
+
     // --- animate ---
     x += dx; y += dy;
-    if (x < 0 || x > 320 - 13*8) dx = -dx;   // 13 chars * 8 px
+    if (x < 0 || x > 320 - 14*8) dx = -dx;   // "HELLO ATARI ST" = 14 chars
     if (y < 0 || y > 200 - 8)    dy = -dy;
 
+    uint32_t draw_us = time_us_32() - t0;   // drawing cost, before publish
     fb_publish();        // push to the ST, paces to 50 Hz
+    prev_draw_us = draw_us;
+    prev_cv_us = fb_last_convert_us();       // c2p cost of that publish
     audio_render_frame();
 }
 ```
 
-That's a complete app: clear → draw → animate → `fb_publish()`. Swap
-`font_print` for `fb_blit`/`fb_fill_rect` to draw your own graphics.
+That's a complete app: clear → draw → animate → `fb_publish()`. `DRAW` is
+the time spent drawing the frame; `C2P` is the chunky→planar cost of
+`fb_publish()`. Swap `font_print` for `fb_blit`/`fb_fill_rect` to draw
+your own graphics.
 
 > Tip: keep `fb_pump_rom3()` + `ikbd_pump()` at the top of the loop and
 > `audio_render_frame()` at the bottom — those keep input and audio alive.
