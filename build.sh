@@ -23,8 +23,9 @@ echo "Version: $VERSION"
 export BOARD_TYPE=$1
 echo "Board type: $BOARD_TYPE"
 
-# Set the release or debug build type
-export BUILD_TYPE=$2
+# Set the release or debug build type (normalized to lowercase so callers
+# may pass "Release"/"Debug" -- matches rp/build.sh's own normalization).
+export BUILD_TYPE=$(echo "$2" | tr '[:upper:]' '[:lower:]')
 echo "Build type: $BUILD_TYPE"
 
 # Set the APP_UUID_KEY of the app to be built
@@ -54,6 +55,14 @@ else
 fi
 cd ..
 echo "Done building rp project"
+
+# Fail loudly if the RP firmware wasn't produced, instead of continuing
+# and leaving an empty dist/ for downstream steps (e.g. the CI release job,
+# which then fails on a confusing `cp dist/*.uf2`).
+if [ ! -f dist/rp.uf2 ]; then
+    echo "ERROR: RP firmware not produced (dist/rp.uf2 missing). Aborting."
+    exit 1
+fi
 
 # Calculate the md5sum of the generated rp.uf2 file
 md5sum dist/rp.uf2 > dist/rp.uf2.md5sum
