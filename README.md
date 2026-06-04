@@ -1,7 +1,9 @@
 # md-framebuffer-template
 
-A template for building a **SidecarTridge Multi-device microfirmware app**
-for the Atari ST / STE / MegaST(E). Your app runs on the Raspberry Pi
+A template for building **sub-20-millisecond audiovisual SidecarTridge
+Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
+games, demos, and console/computer emulations where the speed of putting
+a colourful 320×200 screen up matters. Your app runs on the Raspberry Pi
 Pico (RP2040) in the cartridge: you draw into a **320×200, 16-colour
 framebuffer** in the Pico's RAM, and the firmware blits it to the ST
 screen every VBL (50 Hz) for you. You also get keyboard input and YM
@@ -11,7 +13,7 @@ The headline idea: **you write into one byte-per-pixel buffer, call
 `fb_publish()` once a frame, and the picture appears on the ST — tear-free
 at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
 
-> This repo ships with a 4-demo showcase + animated menu (Epics 5–6).
+> This repo ships with a 4-demo showcase + an animated menu.
 > This guide is about **starting your own app**: what to remove, the API
 > you keep, and a minimal example. For the build toolchain and flashing,
 > see the official docs:
@@ -311,8 +313,8 @@ You own the `<...>` lines; the rest is the template's plumbing.
 ## Going faster
 
 If a frame gets heavy, the demos are the reference for the RP2040
-optimization toolbox (see `docs/epics/epic-05-c2p-demos.md`, Story 5.8):
-per-file `#pragma GCC optimize("O3")`, `__not_in_flash_func()` on hot
+optimization toolbox: per-file `#pragma GCC optimize("O3")`,
+`__not_in_flash_func()` on hot
 loops, fixed-point + sin/cos LUTs, the SIO interpolator for texture
 addressing, and a dual-core band split via `fb_core1_dispatch()`.
 

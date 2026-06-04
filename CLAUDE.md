@@ -4,9 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 See also: `programming.md` (full shared-region table and budget rules), `README.md` (high-level region/userfw overview), `AGENTS.md` (overlapping playbook + troubleshooting table), `CHANGELOG.md` (fastest way to spot breaking changes between template versions — e.g. v1.1.0's `init_romemul` signature change, v1.2.0's region rearrangement, v1.2.1's seed-must-advance invariant).
 
+## ⛔ Never reference the epic docs in shipped material
+
+The epic planning docs (`docs/epics/`) are **internal, gitignored
+notes**. Do NOT reference them — no links to `docs/epics/*.md`, and no
+"Epic N" / "Story X.Y" citations — in **anything that ships or is
+user-facing**: `README.md`, `SKILL.md` / any skill, the `examples/` apps,
+the public docs, and code/header comments. Describe the behaviour or the
+code directly instead (e.g. "the dual-core split in `fb_core1_dispatch`",
+not "the dual-core split from Story 5.8"). When you touch a comment that
+cites an epic/story, rephrase it. Internal cross-references *between* epic
+docs are fine — just keep epic/story numbering out of everything that
+ships. This is a hard rule.
+
 ## What this repo is
 
-Template for a **Sidecartridge Multi-device microfirmware app** targeting Atari ST / STE / MegaST(E). Each "app" is a UF2 image that runs on a Raspberry Pi Pico (RP2040) plugged into the Multi-device cartridge slot, emulating a ROM cartridge for the Atari, while also handling SD card I/O and per-app config. The template ships a **32 KB color framebuffer** in the cartridge that the m68k blits to ST screen every VBL — the primary extension point is "draw into the cart FB, the m68k blits it for you". Public build/usage docs are at <https://docs.sidecartridge.com/sidecartridge-multidevice/programming/>.
+A template for building **sub-20-millisecond audiovisual Sidecartridge Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) — games, demos, and console/computer emulations where the speed of putting a colourful 320×200 screen up matters. Each "app" is a UF2 image that runs on a Raspberry Pi Pico (RP2040) plugged into the Multi-device cartridge slot, emulating a ROM cartridge for the Atari, while also handling SD card I/O and per-app config. You draw into a **320×200, 16-colour framebuffer** in the Pico's RAM and the firmware blits it to the ST screen every VBL (50 Hz) for you; keyboard input and YM audio come for free. The primary extension point is "draw into the framebuffer, the m68k blits it for you". Public build/usage docs are at <https://docs.sidecartridge.com/sidecartridge-multidevice/programming/>.
 
 Network plumbing (WiFi / lwIP / mbedTLS / httpc) was deliberately stripped in Epic 1 / Story 1.1 — apps that need it bring it back from `md-microfirmware-template` upstream.
 

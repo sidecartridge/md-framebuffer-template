@@ -2,16 +2,26 @@
 name: framebuffer-app
 description: >-
   Use when building, modifying, or debugging an app on this
-  md-framebuffer-template (a SidecarTridge Multi-device microfirmware app
-  for the Atari ST, running on the RP2040 in the cartridge). Covers
-  drawing into the chunked framebuffer, the fb_* / palette / audio / ikbd
-  APIs, stripping the bundled demos to start a fresh app, the main-loop
-  pattern, and the build / RAM constraints. Triggers on tasks like "make
-  a framebuffer app", "draw X on the Atari screen", "add audio/input",
-  "strip the demos", or "why does my app show garbage".
+  md-framebuffer-template -- a template for sub-20-ms audiovisual
+  SidecarTridge Multi-device microfirmware apps for the Atari ST (games,
+  demos, console/computer emulations) where the speed of drawing a
+  colourful 320x200 screen matters; you draw a 320x200 16-colour
+  framebuffer on the RP2040 in the cartridge and the firmware blits it to
+  the ST each VBL. Covers the chunked framebuffer, the fb_* / palette /
+  audio / ikbd APIs, stripping the bundled demos to start a fresh app,
+  the main-loop pattern, and the build / RAM constraints. Triggers on
+  tasks like "make a framebuffer app", "draw X on the Atari screen", "add
+  audio/input", "strip the demos", or "why does my app show garbage".
 ---
 
 # Building a framebuffer app on md-framebuffer-template
+
+This template is for **sub-20-millisecond audiovisual SidecarTridge
+Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
+games, demos, and console/computer emulations where the speed of putting
+a colourful 320×200 screen up matters. You draw a 320×200 16-colour
+framebuffer in the Pico's RAM and the firmware blits it to the ST each
+VBL (50 Hz), with keyboard input and YM audio for free.
 
 ## The model (read this first)
 
@@ -98,9 +108,9 @@ while (true) {
 - **Optimization:** the global build is `MinSizeRel` (`-Os`). For hot
   per-pixel loops add `#pragma GCC optimize("O3")` at the top of that
   *compute-only* `.c` file and `__not_in_flash_func()` on the function —
-  never on bus/PIO/timing code. See `docs/epics/epic-05-c2p-demos.md`
-  (Story 5.8) for the full toolbox (LUTs, the SIO interpolator,
-  `fb_core1_dispatch` dual-core).
+  never on bus/PIO/timing code. The demo sources are the reference for
+  the full toolbox (LUTs, the SIO interpolator, `fb_core1_dispatch`
+  dual-core).
 - **Never** edit the `pico-sdk/`, `pico-extras/`, `fatfs-sdk/`
   submodules — the build re-pins them. Don't add features to `main.c`
   (use `emul.c`).
