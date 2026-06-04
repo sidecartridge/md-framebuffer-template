@@ -47,6 +47,17 @@ void __not_in_flash_func(fb_blit)(const struct FB_BITMAP *bm, int dst_x,
 void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
                                       int dst_y, uint8_t key);
 
+/** Band-clipped variants: as above but clip vertically to the half-open
+ *  row window [band_y0, band_y1) instead of the full screen. Used for
+ *  per-core dual-core rendering -- two cores each draw a disjoint band of
+ *  the same buffer with no overlap (Story 5.8). The full-screen forms
+ *  above are just these with band = [0, FB_CHUNKED_H). */
+void __not_in_flash_func(fb_blit_band)(const struct FB_BITMAP *bm, int dst_x,
+                                       int dst_y, int band_y0, int band_y1);
+void __not_in_flash_func(fb_blit_key_band)(const struct FB_BITMAP *bm,
+                                           int dst_x, int dst_y, uint8_t key,
+                                           int band_y0, int band_y1);
+
 #ifdef __cplusplus
 }
 #endif

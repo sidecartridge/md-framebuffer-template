@@ -24,10 +24,12 @@
 #include "audio_sample.h"
 #include "commemul.h"
 #include "debug.h"
+#include "demo.h"
 #include "fb.h"
 #include "ff.h"
 #include "ikbd.h"
 #include "memfunc.h"
+#include "palette.h"
 #include "pico/stdlib.h"
 #include "romemul.h"
 #include "sdcard.h"
@@ -35,8 +37,8 @@
 #include "target_firmware.h"
 
 /* No sleep -- tight loop. Story 1.2.13's dirty-frame handshake means
- * the m68k only blits cart->ST when fb_render_frame() actually publishes
- * a new counter value. The RP can rewrite the framebuffer at whatever
+ * the m68k only blits cart->ST when fb_publish() actually advances
+ * the frame counter. The RP can rewrite the framebuffer at whatever
  * rate it wants; the m68k decides per VBL whether the new content is
  * worth copying. Apps that need a fixed cadence can add their own
  * sleep_ms / sleep_until call here. */
@@ -65,6 +67,16 @@ void emul_start() {
     panic("init_romemul failed: PIO/DMA claim or program load returned <0");
   }
 
+  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring) BEFORE
+  // fb_init: fb_init's first fb_publish() drains the ROM3 ring while it
+  // waits for the m68k's VBL ack, so the ring must already exist. (At
+  // boot the m68k may not be emitting acks yet; the first publish just
+  // times out after ~33 ms and proceeds.) The main loop drains the
+  // ring via fb_pump_rom3() -> IKBD demux + VBL frame-sync.
+  if (commemul_init() < 0) {
+    panic("commemul_init failed: PIO/DMA claim or program load returned <0");
+  }
+
   // Initialise the 32 KB low-res framebuffer (320x200, 4 bpp). Sets
   // up `fb_screen` for the font/draw primitives, clears the FB to
   // black (0xFF -> palette index 15 on the default TOS palette), and
@@ -74,21 +86,19 @@ void emul_start() {
     panic("fb_init failed");
   }
 
+  // Publish the default 16-colour palette to the cart shared-region
+  // slot. The m68k VBL handler applies it to the shifter palette
+  // registers ($FFFF8240..) every frame. Apps that want a different
+  // palette call palette_set() / palette_set_entry() at any time;
+  // the next VBL picks it up.
+  palette_init();
+
   // Initialise the cart audio buffer producer (see audio.h). The
   // m68k Timer-B IRQ in userfw.s consumes the buffer at ~5,585 Hz
   // (2 B/sample dual-channel mode). audio_init() leaves the buffer
   // silent until a callback is installed; the playback source is
   // chosen below, after the SD card has had a chance to mount.
   audio_init();
-
-  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring on
-  // GPIO 26). The main loop drains the ring directly into the IKBD
-  // demux via commemul_poll(ikbd_consume_rom3_sample) -- no
-  // command-dispatch middleware. Apps that need a richer command
-  // channel can wrap commemul_poll with their own callback.
-  if (commemul_init() < 0) {
-    panic("commemul_init failed: PIO/DMA claim or program load returned <0");
-  }
 
   // SD card -- best-effort. Apps that need persistent storage can
   // ignore the failure path or treat it as fatal. The folder name is
@@ -116,28 +126,35 @@ void emul_start() {
   // Cartridge SELECT button -- apps can poll select_isPressed().
   select_configure();
 
+  // Bring up the Epic 5 demo dispatcher. demo_dispatcher_init takes
+  // ownership of the ESC key from ikbd.c (ESC now means "back to
+  // menu" inside a demo and "exit to GEM" only when the menu is on
+  // screen). The first dispatcher render paints the boot menu over
+  // whatever fb_init left in the framebuffer.
+  demo_dispatcher_init();
+
   // Main loop:
   //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
   //      ring (one PIO sample per IKBD byte the m68k Timer-B handler
   //      forwarded; the filter inside ikbd_consume_rom3_sample picks
   //      out the $FB8200..$FB82FF window).
   //   2. Run the IKBD demux on whatever bytes arrived.
-  //   3. Drain decoded key events via DPRINTF (apps replace this with
-  //      their own consumer).
-  //   4. Re-render the cart framebuffer. The m68k VBL loop in
+  //   3. Forward decoded key events to the dispatcher (which routes
+  //      to the menu or the active demo).
+  //   4. Re-render the cart framebuffer via the dispatcher (menu UI
+  //      or active demo's render_frame). The m68k VBL loop in
   //      userfw.s blits this into an ST screen page once per VBL.
   DPRINTF("Entering main loop\n");
   while (true) {
-    commemul_poll(ikbd_consume_rom3_sample);
+    fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
     ikbd_pump();
 
     ikbd_key_event_t k;
     while (ikbd_pop_key(&k)) {
-      DPRINTF("IKBD KEY %s: $%02x\n", k.is_press ? "DOWN" : "UP ",
-              k.scancode);
+      demo_dispatcher_handle_key(&k);
     }
 
-    fb_render_frame();
+    demo_dispatcher_render_frame();
     audio_render_frame();
   }
 }

@@ -151,3 +151,43 @@ fb_c2p_half:
 .Lmask:        .word 0x01010101
 
         .size   fb_c2p_half, .-fb_c2p_half
+
+@ ---------------------------------------------------------------------------
+@ void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
+@                              uint32_t count);
+@
+@ The chunk-reversed publish from fb_planar_publish (Story 5.8). Copies
+@ `count` 48-byte (12-word) chunks to `dst` (forward) from `src_last`
+@ (which points at the LAST chunk) in REVERSE chunk order: dst chunk k
+@ gets src chunk (count-1-k). Each chunk's 48 bytes are copied forward.
+@
+@ Why asm: GCC at -O3 can't prove the `uint8_t*` pointers are word-aligned
+@ and emits a `bl memcpy` per chunk (666/frame); forcing word copies gets
+@ it to 12 ldr + 12 str/chunk but never ldm/stm. We know cart FB ($FA8300)
+@ and `fb_planar_scratch` are 4-byte aligned and chunks are 48 = 12 words,
+@ so ldmia/stmia (5+5+2 regs) is safe and ~halves the memory ops. Placed
+@ in .time_critical (RAM) like the c2p worker -- it's on the per-frame
+@ publish path that runs in the m68k's post-blit slack.
+@
+@   r0 = dst, r1 = src_last, r2 = count.  r3-r7 = chunk words.
+        .section .time_critical.fb_chunk_reverse_copy48, "ax", %progbits
+        .thumb_func
+        .global fb_chunk_reverse_copy48
+        .type fb_chunk_reverse_copy48, %function
+fb_chunk_reverse_copy48:
+        push    {r4, r5, r6, r7, lr}
+        cmp     r2, #0
+        beq     2f
+1:
+        ldmia   r1!, {r3, r4, r5, r6, r7}   @ words 0..4  (20 B), src += 20
+        stmia   r0!, {r3, r4, r5, r6, r7}   @ dst += 20
+        ldmia   r1!, {r3, r4, r5, r6, r7}   @ words 5..9  (20 B), src += 20
+        stmia   r0!, {r3, r4, r5, r6, r7}   @ dst += 20
+        ldmia   r1!, {r3, r4}               @ words 10..11 (8 B) -> 48 B
+        stmia   r0!, {r3, r4}
+        subs    r1, r1, #96                 @ src back to previous chunk start
+        subs    r2, r2, #1
+        bne     1b
+2:
+        pop     {r4, r5, r6, r7, pc}
+        .size   fb_chunk_reverse_copy48, .-fb_chunk_reverse_copy48

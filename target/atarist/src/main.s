@@ -43,6 +43,12 @@ CARTRIDGE_CODE_SIZE	equ $4000	; 16 KB max for cartridge header + code + fbdrv
 SHARED_BLOCK_ADDR	equ (ROM4_ADDR + CARTRIDGE_CODE_SIZE)		; $FA4000
 CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA4000
 
+; 16-entry ST palette slot (Epic 5). 32 bytes of 16-bit palette
+; words published by the RP, applied to $FFFF8240..$FFFF825E by
+; userfw_vbl_loop. Slot 12 of SHARED_VARIABLES (offset +$30).
+PALETTE_ADDR		equ (SHARED_BLOCK_ADDR + $40)			; $FA4040
+PALETTE_SIZE		equ 32						; 16 words
+
 FRAMEBUFFER_SIZE	equ 32000	; 320x200 low-res (4bpp) framebuffer
 FRAMEBUFFER_ADDR	equ (ROM4_ADDR + $10000 - FRAMEBUFFER_SIZE)	; $FA8300
 

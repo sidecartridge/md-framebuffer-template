@@ -104,12 +104,19 @@ target_sources(${PROJECT_NAME} PRIVATE
         emul.c
         fb.c
         fb_blit.c
+        fb_blit_asm.S
         fb_chunked.c
         fb_chunked_asm.S
         fb_font.c
         gconfig.c
         ikbd.c
         hw_config.c
+        palette.c
+        demo_menu.c
+        demo_parallax.c
+        demo_3d.c
+        demo_sprites.c
+        demo_cojorotozoom.c
         reset.c
         romemul.c
         sdcard.c
@@ -123,7 +130,8 @@ pico_add_extra_outputs(${PROJECT_NAME})
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${LINK_LIBRARIES}        # External or additional libraries passed as variables
     hardware_flash           # Flash memory access
-    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library   
+    hardware_interp          # SIO interpolators (cojorotozoom texel addressing)
+    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library
     pico_stdlib              # Core functionality
     pico_multicore          # Multicore support
     settings                 # Custom settings library

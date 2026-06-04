@@ -61,6 +61,13 @@ static uint8_t          s_key_tail = 0;
 /* ESC press+release timestamp (microseconds, 0 = no press pending). */
 static uint32_t s_esc_press_us = 0;
 
+/* When true (default), ESC press+release pairs write CMD_BOOT_GEM to
+ * the cart sentinel and userfw exits to GEM. Apps that want to own
+ * the ESC key (e.g. menu+demo dispatcher) clear this via
+ * ikbd_set_esc_auto_exit(false) -- ESC events are still delivered
+ * through ikbd_pop_key, the auto-write is just gated off. */
+static bool s_esc_auto_exit = true;
+
 void __not_in_flash_func(ikbd_consume_rom3_sample)(uint16_t addr_lsb) {
   if ((addr_lsb & IKBD_WINDOW_MASK) == IKBD_WINDOW_LO16) {
     uint8_t byte = (uint8_t)(addr_lsb & 0xFFu);
@@ -81,6 +88,11 @@ void ikbd_init(void) {
   s_key_head = 0;
   s_key_tail = 0;
   s_esc_press_us = 0;
+  s_esc_auto_exit = true;
+}
+
+void ikbd_set_esc_auto_exit(bool enabled) {
+  s_esc_auto_exit = enabled;
 }
 
 size_t ikbd_ring_count(void) {
@@ -120,7 +132,7 @@ static void push_key(uint8_t scancode, bool is_press) {
     } else {
       uint32_t press = s_esc_press_us;
       s_esc_press_us = 0;
-      if (press != 0u &&
+      if (s_esc_auto_exit && press != 0u &&
           (time_us_32() - press) < IKBD_ESC_RELEASE_TIMEOUT_US) {
         *((volatile uint32_t *)((uintptr_t)&__rom_in_ram_start__ +
                                 CART_CMD_SENTINEL_OFFSET)) =

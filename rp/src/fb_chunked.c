@@ -20,14 +20,15 @@
  * output into `fb_planar_scratch` in RP RAM. Once both halves are
  * complete, fb_chunky_to_planar copies the planar bytes into the
  * caller's `planar` (the cart framebuffer at $FA8300) with the
- * 56-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
+ * 48-byte m68k MOVEM chunks pre-reversed -- the m68k FBDRV_INLINE
  * macro uses `movem.l list, -(a5)` predec stores, which land each
  * chunk in the destination ST page in reverse memory order. See the
  * "Framebuffer chunk layout for the m68k MOVEM blit" comment in
  * cart_shared.h for the full spec.
  *
  * Expected wallclock: ~1.0-1.3 ms per frame for the dual-core c2p
- * + ~60-120 us for the chunk-reversed copy (571 * 56-byte memcpys).
+ * + the chunk-reversed copy (666 * 48-byte chunks via the ldmia/stmia
+ * asm worker fb_chunk_reverse_copy48).
  */
 
 #include "fb_chunked.h"
@@ -36,6 +37,12 @@
 
 #include "cart_shared.h"
 #include "pico/multicore.h"
+
+/* Per-file -O3: the global build is MinSizeRel (-Os). The chunky->planar
+ * conversion + chunk-reversed memcpy here run on the hot per-frame path
+ * and are pure compute; the dual-core handshake uses blocking FIFO calls
+ * (real SDK calls with barriers), so -O3 is safe. */
+#pragma GCC optimize("O3")
 
 uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE] __attribute__((aligned(4)));
 
@@ -55,71 +62,105 @@ extern void fb_c2p_half(uint16_t *dst,
 static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
     __attribute__((aligned(4)));
 
-/* Core 1 forever-loop. Pops a dst pointer for the bottom half, runs
- * the asm worker, signals completion. Placed in RAM so the inner
- * loop doesn't pay XIP cost on every dispatch. */
-static void __not_in_flash_func(fb_c2p_core1_loop)(void) {
+/* Generic Core 1 worker loop (Story 5.8 dual-core). Pops a job function
+ * pointer + arg off the FIFO, runs it, signals completion. Both the c2p
+ * bottom half and the demos' band rendering dispatch through this. The
+ * fn/arg travel through the FIFO (not shared memory), so the FIFO's
+ * push/pop barriers fully order the handoff. Placed in RAM so the loop
+ * doesn't pay XIP cost on every dispatch. */
+static void __not_in_flash_func(fb_core1_loop)(void) {
   for (;;) {
-    uintptr_t dst_bottom = (uintptr_t)multicore_fifo_pop_blocking();
-    fb_c2p_half((uint16_t *)dst_bottom,
-                fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES,
-                fb_chunked_buffer + FB_CHUNKED_SIZE);
-    multicore_fifo_push_blocking(0);
+    fb_core1_job_t job = (fb_core1_job_t)(uintptr_t)multicore_fifo_pop_blocking();
+    void *arg = (void *)(uintptr_t)multicore_fifo_pop_blocking();
+    job(arg);
+    multicore_fifo_push_blocking(0); /* done */
   }
+}
+
+void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg) {
+  multicore_fifo_push_blocking((uint32_t)(uintptr_t)job);
+  multicore_fifo_push_blocking((uint32_t)(uintptr_t)arg);
+}
+
+void __not_in_flash_func(fb_core1_wait)(void) {
+  (void)multicore_fifo_pop_blocking(); /* wait for done */
+}
+
+/* c2p bottom-half job: arg is the bottom-half planar dst pointer. */
+static void __not_in_flash_func(fb_c2p_bottom_job)(void *arg) {
+  fb_c2p_half((uint16_t *)arg,
+              fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES,
+              fb_chunked_buffer + FB_CHUNKED_SIZE);
 }
 
 void fb_chunked_init(void) {
   /* multicore_launch_core1 blocks until Core 1 has entered the user
    * function, so by the time fb_init returns, Core 1 is parked in the
    * FIFO pop and ready to service the first frame. */
-  multicore_launch_core1(fb_c2p_core1_loop);
+  multicore_launch_core1(fb_core1_loop);
 }
 
 void fb_chunked_clear(uint8_t color) {
   memset(fb_chunked_buffer, color, sizeof(fb_chunked_buffer));
 }
 
-void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
+void __not_in_flash_func(fb_transpose)(void) {
   /* Dispatch bottom half to Core 1. Both cores write into the
-   * scratch buffer (natural row-major layout). The push is "blocking"
-   * in name but non-blocking in practice: we only ever have one
-   * outstanding message and the FIFO is 8 entries deep. */
-  multicore_fifo_push_blocking(
-      (uint32_t)(uintptr_t)(fb_planar_scratch + FB_C2P_HALF_DST_WORDS));
+   * scratch buffer (natural row-major layout). */
+  fb_core1_dispatch(fb_c2p_bottom_job,
+                    fb_planar_scratch + FB_C2P_HALF_DST_WORDS);
 
   /* Top half: Core 0 runs the worker directly, in parallel with Core 1. */
   fb_c2p_half(fb_planar_scratch,
               fb_chunked_buffer,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES);
 
-  /* Wait for Core 1 to finish its half. The pop is a synchronization
+  /* Wait for Core 1 to finish its half. The join is a synchronization
    * barrier: pico-sdk's FIFO primitives include DMB/DSB internally, so
    * Core 1's planar writes are guaranteed visible to Core 0 by the
    * time this returns. */
-  (void)multicore_fifo_pop_blocking();
+  fb_core1_wait();
+}
 
+/* Thumb asm (fb_chunked_asm.S): the chunk-reversed copy via ldmia/stmia.
+ * Replaces a per-chunk memcpy() loop -- GCC at -O3 can't prove the
+ * uint8_t* pointers are word-aligned and emitted a `bl memcpy` per chunk
+ * (666/frame); the cart FB + scratch are in fact 4-byte aligned. */
+extern void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
+                                    uint32_t count);
+_Static_assert(CART_FB_CHUNK_BYTES == 48,
+               "fb_chunk_reverse_copy48 hard-codes 48-byte (12-word) chunks");
+
+void __not_in_flash_func(fb_planar_publish)(uint16_t *planar) {
   /* Chunk-reversed publish from scratch -> cart FB. cart-FB chunk K
-   * (bytes K*56..K*56+55) is filled with scratch chunk (570-K), so
-   * the m68k's predec MOVEM blit lands each chunk at its natural
-   * image position. The body unrolls cleanly: 56 bytes = 14 longword
-   * copies per chunk. */
+   * is filled with scratch chunk (last-1-k), so the m68k's predec
+   * MOVEM blit lands each chunk at its natural image position. This is
+   * the ONLY cart-FB write -- it must run in the m68k's post-blit slack
+   * (gated by fb_publish's VBL wait), and it's fast so it fits. The slow
+   * transpose above runs unsynchronized (RP scratch RAM) and overlaps
+   * the m68k blit. */
   const uint8_t *scratch_bytes = (const uint8_t *)fb_planar_scratch;
   uint8_t *cart_bytes = (uint8_t *)planar;
-  for (uint32_t k = 0; k < CART_FB_CHUNK_COUNT; k++) {
-    const uint8_t *src_chunk =
-        scratch_bytes +
-        (CART_FB_CHUNK_COUNT - 1u - k) * (uint32_t)CART_FB_CHUNK_BYTES;
-    uint8_t *dst_chunk = cart_bytes + k * (uint32_t)CART_FB_CHUNK_BYTES;
-    memcpy(dst_chunk, src_chunk, CART_FB_CHUNK_BYTES);
-  }
 
-  /* Tail: the final CART_FB_CHUNK_TAIL bytes of the image (bottom-right
-   * 48 pixels at 4 bpp) don't fit into any 56-byte MOVEM chunk, so the
-   * m68k handles them with a small fixed-size MOVEM at the end of
-   * FBDRV_INLINE using d16(a5) addressing. That post-loop MOVEM reads
-   * from cart-FB[31976..31999] in NATURAL (non-reversed) order -- copy
-   * them straight from scratch. */
+  /* src_last points at the final scratch chunk; the asm walks it back one
+   * chunk per iteration, copying each 48-byte chunk forward. */
+  fb_chunk_reverse_copy48(cart_bytes,
+                          scratch_bytes + (CART_FB_CHUNK_COUNT - 1u) *
+                                              (uint32_t)CART_FB_CHUNK_BYTES,
+                          CART_FB_CHUNK_COUNT);
+
+  /* Tail: the final CART_FB_CHUNK_TAIL bytes (bottom-right pixels)
+   * don't fit a MOVEM chunk; the m68k copies them with a d16(a5) MOVEM
+   * in NATURAL order, so copy them straight from scratch. */
   memcpy(cart_bytes + CART_FB_CHUNK_COVERED,
          scratch_bytes + CART_FB_CHUNK_COVERED,
          CART_FB_CHUNK_TAIL);
+}
+
+void __not_in_flash_func(fb_chunky_to_planar)(uint16_t *planar) {
+  /* Convenience wrapper: transpose then publish in one call (no VBL
+   * sync). fb.c's fb_publish() calls the two halves separately so the
+   * transpose can overlap the m68k blit and only the publish waits. */
+  fb_transpose();
+  fb_planar_publish(planar);
 }
