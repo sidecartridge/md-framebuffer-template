@@ -1,7 +1,7 @@
 @ File: fb_blit_asm.S
 @
 @ Hand-written Thumb: fb_blit_key_row -- one row of a colour-keyed
-@ (transparent) sprite blit (Story 5.8 RP2040 optimizations). Copies cw
+@ (transparent) sprite blit. Copies cw
 @ bytes src->dst, skipping bytes equal to `key`.
 @
 @ Why asm: the C inner loop at -O3 spends ~11 cyc/pixel, of which ~5 are

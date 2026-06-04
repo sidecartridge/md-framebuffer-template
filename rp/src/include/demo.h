@@ -1,8 +1,8 @@
 /**
  * File: demo.h
- * Description: Demo module interface + dispatcher (Epic 5).
+ * Description: Demo module interface + dispatcher.
  *
- * Each Epic-5 demo (`demo_parallax`, `demo_3d`, `demo_sprites`) is a
+ * Each demo (`demo_parallax`, `demo_3d`, `demo_sprites`) is a
  * `demo_module_t` providing a small set of lifecycle functions. The
  * dispatcher in demo_menu.c owns the boot-menu UI, the demo-selection
  * state machine, and the ESC routing:
@@ -54,7 +54,7 @@ typedef struct {
   void (*teardown)(void);
 } demo_module_t;
 
-/* The Epic-5 demos. Each lives in its own .c file. */
+/* The demos. Each lives in its own .c file. */
 extern const demo_module_t demo_parallax;
 extern const demo_module_t demo_3d;
 extern const demo_module_t demo_sprites;

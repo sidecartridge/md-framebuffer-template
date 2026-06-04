@@ -1,6 +1,6 @@
 /**
  * File: solid3d.h
- * Description: Geometry for the Story 5.3 rotating 3D solid demo --
+ * Description: Geometry for the rotating 3D solid demo --
  * a geodesic sphere (icosahedron subdivided to frequency 9), 812
  * vertices / 1620 triangular faces, projected to a sphere of radius
  * 420 (8.8 fixed). Convex, so backface culling + direct fill needs

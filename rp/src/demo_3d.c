@@ -1,6 +1,6 @@
 /**
  * File: demo_3d.c
- * Description: Epic 5 Story 5.3 -- filled flat-shaded rotating 3D solid.
+ * Description: filled flat-shaded rotating 3D solid.
  *
  * A classic demoscene vector object: a geodesic sphere (icosahedron
  * subdivided, vertex/face counts in solid3d.h) tumbling in space, each

@@ -1,7 +1,7 @@
 /**
  * File: fb_chunked.c
  * Description: Chunked framebuffer storage + Core 0 / Core 1 dispatch
- *              for the chunky-to-planar conversion (Epic 2 Story 2.4).
+ *              for the chunky-to-planar conversion.
  *
  * `fb_c2p_half(dst, src, src_end)` lives in fb_chunked_asm.S -- the
  * multiplication-based bit-transpose worker that converts a range of
@@ -62,7 +62,7 @@ extern void fb_c2p_half(uint16_t *dst,
 static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
     __attribute__((aligned(4)));
 
-/* Generic Core 1 worker loop (Story 5.8 dual-core). Pops a job function
+/* Generic Core 1 worker loop (dual-core). Pops a job function
  * pointer + arg off the FIFO, runs it, signals completion. Both the c2p
  * bottom half and the demos' band rendering dispatch through this. The
  * fn/arg travel through the FIFO (not shared memory), so the FIFO's

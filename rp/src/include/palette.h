@@ -1,6 +1,6 @@
 /**
  * File: palette.h
- * Description: 16-entry ST hardware-palette publisher (Epic 5).
+ * Description: 16-entry ST hardware-palette publisher.
  *
  * The RP writes a 16-word palette into the cart shared-region slot
  * at CART_PALETTE_OFFSET; the m68k VBL handler in userfw.s reads
@@ -27,7 +27,7 @@
  *   - idx 15 = black   -- matches `clear-to-0xFF = background`
  *                         used by fb_init() / fb_render_frame().
  *   - idx 1..14        -- a mid palette of blue / warm / green /
- *                         earth shades intended to cover Epic 5's
+ *                         earth shades intended to cover the
  *                         three demos with a single shared set.
  */
 

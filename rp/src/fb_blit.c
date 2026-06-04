@@ -2,8 +2,8 @@
  * File: fb_blit.c
  * Description: Implementations of fb_fill_rect / fb_blit / fb_blit_key.
  *
- * Story 2.3 first cut: plain C with per-row clipping + memcpy for the
- * opaque blit. Story 2.4 can vectorise / unroll if needed.
+ * Plain C with per-row clipping + memcpy for the opaque blit; can
+ * vectorise / unroll if needed.
  */
 
 #include "fb_blit.h"
@@ -42,8 +42,8 @@ static inline int clip_axis(int start, int len, int max, int *src_off) {
 
 /* Like clip_axis but clips [start, start+len) to an arbitrary [lo, hi)
  * window instead of [0, max). Used by the band-clipped blits so two cores
- * can render disjoint horizontal bands of the same buffer (Story 5.8
- * dual-core). */
+ * can render disjoint horizontal bands of the same buffer
+ * (dual-core). */
 static inline int clip_axis_band(int start, int len, int lo, int hi,
                                  int *src_off) {
   if (start < lo) {

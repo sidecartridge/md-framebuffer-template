@@ -1,6 +1,6 @@
 /**
  * File: demo_sprites.c
- * Description: Epic 5 Story 5.4 -- multi-sprite swarm demo.
+ * Description: multi-sprite swarm demo.
  *
  * Ported from the "pico-vga-6bit-demo" by Ricardo Massaro
  * (https://github.com/moefh/pico-vga-6bit-demo, MIT License,
@@ -162,7 +162,7 @@ static void __not_in_flash_func(sprites_teardown)(void) {
 }
 
 /* Render the background tiles + all sprites, clipped to rows [y0, y1).
- * Called on BOTH cores with disjoint bands (Story 5.8 dual-core): the
+ * Called on BOTH cores with disjoint bands (dual-core): the
  * tiles fully cover each band (so they double as the per-band clear) and
  * the bands never overlap, so the two cores never write the same pixel.
  * Reads only -- positions were settled by move_character on Core 0 before

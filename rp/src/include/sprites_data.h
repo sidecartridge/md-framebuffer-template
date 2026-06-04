@@ -1,6 +1,6 @@
 /**
  * File: sprites_data.h
- * Description: Sprite + tile data for the Story 5.4 multi-sprite
+ * Description: Sprite + tile data for the multi-sprite
  * swarm demo, ported from the 'pico-vga-6bit-demo' by Ricardo
  * Massaro (https://github.com/moefh/pico-vga-6bit-demo, MIT).
  *

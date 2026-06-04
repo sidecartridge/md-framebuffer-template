@@ -11,7 +11,7 @@
  *
  * The constants used to live in `chandler.h` under the `CHANDLER_*`
  * prefix. The chandler / TPROTOCOL command-channel machinery was
- * removed in Epic 3 Story 3.8; the layout constants survived the
+ * removed; the layout constants survived the
  * cull because IKBD and the framebuffer pipeline both need them.
  *
  * Layout must match target/atarist/src/main.s on the m68k side.
@@ -35,7 +35,7 @@
  *   $FA4004  (reserved)            8 B  (was RANDOM_TOKEN +
  *                                        RANDOM_TOKEN_SEED for the
  *                                        former TPROTOCOL handshake;
- *                                        unused since Epic 3 Story 3.8)
+ *                                        unused)
  *   $FA400C  FB_FRAME_COUNTER      4 B  (RP-incremented dirty-frame
  *                                        marker; m68k VBL loop skips
  *                                        the cart->ST blit when this

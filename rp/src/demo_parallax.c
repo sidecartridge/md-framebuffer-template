@@ -1,6 +1,6 @@
 /**
  * File: demo_parallax.c
- * Description: Epic 5 Story 5.2 -- "Uridium-style" parallax demo.
+ * Description: "Uridium-style" parallax demo.
  *
  * Five layers drawn into the chunked byte-per-pixel buffer (low
  * nibble = palette index), back to front:

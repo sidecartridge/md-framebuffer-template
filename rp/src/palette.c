@@ -1,6 +1,6 @@
 /**
  * File: palette.c
- * Description: 16-entry ST hardware-palette publisher (Epic 5).
+ * Description: 16-entry ST hardware-palette publisher.
  *
  * See palette.h for the public API and palette format. This file
  * owns the default 16-colour palette baked into the template and
@@ -20,7 +20,7 @@
 #include "memfunc.h"
 
 /* Default 16-colour palette for the template. Designed to cover
- * Epic 5's three demos (parallax / 3D / multisprites) from a single
+ * the three demos (parallax / 3D / multisprites) from a single
  * shared palette:
  *
  *   idx 0  = white      -- text foreground (font_set_color(0))
