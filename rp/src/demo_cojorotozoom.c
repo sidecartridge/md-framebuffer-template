@@ -344,18 +344,8 @@ static void __not_in_flash_func(blit_diego)(int cx, int cy, int s_fix) {
   }
 }
 
-/* The rotozoom samples the texture in a rotated (scrambled) order; as a
- * flash `const` it thrashes the 16 KB XIP cache when zoomed out (the
- * texture is itself ~16 KB), making each sample a slow flash fetch.
- * Mirror it into RAM at init so every sample is a single-cycle SRAM
- * read. (~16 KB of RAM, demo-local.) */
-static uint8_t s_tex_ram[COJO_TEX_W * COJO_TEX_H];
-
 static void __not_in_flash_func(roto_init)(void) {
   palette_set(cojo_palette);
-  for (int i = 0; i < COJO_TEX_W * COJO_TEX_H; i++) {
-    s_tex_ram[i] = cojo_texture_data[i];
-  }
   s_frame = 0;
   s_prev_draw_us = 0;
   s_prev_cv_us = 0;
@@ -411,7 +401,7 @@ static void __not_in_flash_func(roto_render_frame)(void) {
     int v = v_row;
     uint8_t *row = fb_chunked_buffer + sy * FB_CHUNKED_W;
     for (int sx = 0; sx < FB_CHUNKED_W; sx++) {
-      uint8_t texel = s_tex_ram[(((v >> 8) & COJO_TEX_HMASK) * COJO_TEX_W) +
+      uint8_t texel = cojo_texture_data[(((v >> 8) & COJO_TEX_HMASK) * COJO_TEX_W) +
                                 ((u >> 8) & COJO_TEX_WMASK)];
       if (texel != COJO_TEX_TRANSPARENT) {
         row[sx] = texel; /* logo over the background; black = see-through */

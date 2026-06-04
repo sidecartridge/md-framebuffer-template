@@ -74,7 +74,7 @@ static void render_menu(void) {
   font_move(80, 76);
   font_print("1.  Uridium scroll");
   font_move(80, 96);
-  font_print("2.  3D scene");
+  font_print("2.  3D Solid");
   font_move(80, 116);
   font_print("3.  Multi-sprite swarm");
   font_move(80, 136);
