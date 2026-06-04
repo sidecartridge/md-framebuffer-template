@@ -161,6 +161,31 @@ static void __not_in_flash_func(sprites_teardown)(void) {
   palette_init(); /* restore the template default palette */
 }
 
+/* Render the background tiles + all sprites, clipped to rows [y0, y1).
+ * Called on BOTH cores with disjoint bands (Story 5.8 dual-core): the
+ * tiles fully cover each band (so they double as the per-band clear) and
+ * the bands never overlap, so the two cores never write the same pixel.
+ * Reads only -- positions were settled by move_character on Core 0 before
+ * dispatch, so there is no shared-write race. */
+static void __not_in_flash_func(render_band)(int y0, int y1) {
+  for (int ty = 0; ty < 4; ty++) {
+    for (int tx = 0; tx < 5; tx++) {
+      fb_blit_band(&tiles_frames[bg_map[ty * 5 + tx]], tx * SPRITES_TILE_W,
+                   ty * SPRITES_TILE_H, y0, y1);
+    }
+  }
+  for (int i = 0; i < s_active; i++) {
+    struct CHARACTER *ch = &s_chars[i];
+    fb_blit_key_band(ch->sprite, ch->x, ch->y, SPRITES_KEY, y0, y1);
+  }
+}
+
+/* Core 1 job: the bottom half-screen band. */
+static void __not_in_flash_func(render_bottom_band_job)(void *arg) {
+  (void)arg;
+  render_band(FB_CHUNKED_H / 2, FB_CHUNKED_H);
+}
+
 static void __not_in_flash_func(sprites_render_frame)(void) {
   uint32_t t0 = time_us_32();
 
@@ -176,21 +201,11 @@ static void __not_in_flash_func(sprites_render_frame)(void) {
     move_character(&s_chars[i]);
   }
 
-  /* Background (also erases last frame's sprites). The 5x4 tile map of
-   * 64x64 opaque tiles fully covers the 320x200 screen, so no separate
-   * clear is needed -- the tiles ARE the clear. */
-  for (int ty = 0; ty < 4; ty++) {
-    for (int tx = 0; tx < 5; tx++) {
-      fb_blit(&tiles_frames[bg_map[ty * 5 + tx]], tx * SPRITES_TILE_W,
-              ty * SPRITES_TILE_H);
-    }
-  }
-
-  /* Sprites (transparent), tracking the last active speech bubble. */
+  /* Find the last active speech bubble (logic only; the bubble is printed
+   * on Core 0 after the bands join, below). */
   int msg_index = -1, msg_x = 0, msg_y = 0;
   for (int i = 0; i < s_active; i++) {
     struct CHARACTER *ch = &s_chars[i];
-    fb_blit_key(ch->sprite, ch->x, ch->y, SPRITES_KEY);
     if (ch->message_index >= 0) {
       msg_x = ch->x + SPRITES_LB_W / 2;
       msg_y = ch->y - 10;
@@ -198,6 +213,13 @@ static void __not_in_flash_func(sprites_render_frame)(void) {
     }
   }
 
+  /* Dual-core: Core 1 draws the bottom half-screen band while Core 0
+   * draws the top. Disjoint bands => no overlap, no race. */
+  fb_core1_dispatch(render_bottom_band_job, NULL);
+  render_band(0, FB_CHUNKED_H / 2);
+  fb_core1_wait();
+
+  /* Speech bubble + HUD drawn on top, on Core 0 (both bands now done). */
   font_set_color(COL_TEXT);
   if (msg_index >= 0) {
     font_align(FONT_ALIGN_CENTER);

@@ -43,6 +43,19 @@ extern uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
  * deadlock inside pico-sdk's launch handshake. */
 void fb_chunked_init(void);
 
+/* Run a job on Core 1, in parallel with Core 0 (Story 5.8 dual-core).
+ * `fb_core1_dispatch` hands `job(arg)` to the parked Core 1 worker and
+ * returns immediately; the caller then does its own half of the work and
+ * calls `fb_core1_wait()` to join. The fn+arg are passed through the
+ * inter-core FIFO, whose push/pop carry the cross-core memory barriers,
+ * so data prepared before dispatch is visible to the job and the job's
+ * writes are visible after wait. Each dispatch MUST be paired with one
+ * wait before the next dispatch (the c2p in fb_transpose uses this too,
+ * so demos must join their own job before fb_publish). */
+typedef void (*fb_core1_job_t)(void *arg);
+void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg);
+void __not_in_flash_func(fb_core1_wait)(void);
+
 /* Fill the entire chunked buffer with a single palette index. */
 void fb_chunked_clear(uint8_t color);
 

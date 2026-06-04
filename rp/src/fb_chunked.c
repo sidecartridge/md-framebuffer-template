@@ -62,24 +62,42 @@ extern void fb_c2p_half(uint16_t *dst,
 static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
     __attribute__((aligned(4)));
 
-/* Core 1 forever-loop. Pops a dst pointer for the bottom half, runs
- * the asm worker, signals completion. Placed in RAM so the inner
- * loop doesn't pay XIP cost on every dispatch. */
-static void __not_in_flash_func(fb_c2p_core1_loop)(void) {
+/* Generic Core 1 worker loop (Story 5.8 dual-core). Pops a job function
+ * pointer + arg off the FIFO, runs it, signals completion. Both the c2p
+ * bottom half and the demos' band rendering dispatch through this. The
+ * fn/arg travel through the FIFO (not shared memory), so the FIFO's
+ * push/pop barriers fully order the handoff. Placed in RAM so the loop
+ * doesn't pay XIP cost on every dispatch. */
+static void __not_in_flash_func(fb_core1_loop)(void) {
   for (;;) {
-    uintptr_t dst_bottom = (uintptr_t)multicore_fifo_pop_blocking();
-    fb_c2p_half((uint16_t *)dst_bottom,
-                fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES,
-                fb_chunked_buffer + FB_CHUNKED_SIZE);
-    multicore_fifo_push_blocking(0);
+    fb_core1_job_t job = (fb_core1_job_t)(uintptr_t)multicore_fifo_pop_blocking();
+    void *arg = (void *)(uintptr_t)multicore_fifo_pop_blocking();
+    job(arg);
+    multicore_fifo_push_blocking(0); /* done */
   }
+}
+
+void __not_in_flash_func(fb_core1_dispatch)(fb_core1_job_t job, void *arg) {
+  multicore_fifo_push_blocking((uint32_t)(uintptr_t)job);
+  multicore_fifo_push_blocking((uint32_t)(uintptr_t)arg);
+}
+
+void __not_in_flash_func(fb_core1_wait)(void) {
+  (void)multicore_fifo_pop_blocking(); /* wait for done */
+}
+
+/* c2p bottom-half job: arg is the bottom-half planar dst pointer. */
+static void __not_in_flash_func(fb_c2p_bottom_job)(void *arg) {
+  fb_c2p_half((uint16_t *)arg,
+              fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES,
+              fb_chunked_buffer + FB_CHUNKED_SIZE);
 }
 
 void fb_chunked_init(void) {
   /* multicore_launch_core1 blocks until Core 1 has entered the user
    * function, so by the time fb_init returns, Core 1 is parked in the
    * FIFO pop and ready to service the first frame. */
-  multicore_launch_core1(fb_c2p_core1_loop);
+  multicore_launch_core1(fb_core1_loop);
 }
 
 void fb_chunked_clear(uint8_t color) {
@@ -88,22 +106,20 @@ void fb_chunked_clear(uint8_t color) {
 
 void __not_in_flash_func(fb_transpose)(void) {
   /* Dispatch bottom half to Core 1. Both cores write into the
-   * scratch buffer (natural row-major layout). The push is "blocking"
-   * in name but non-blocking in practice: we only ever have one
-   * outstanding message and the FIFO is 8 entries deep. */
-  multicore_fifo_push_blocking(
-      (uint32_t)(uintptr_t)(fb_planar_scratch + FB_C2P_HALF_DST_WORDS));
+   * scratch buffer (natural row-major layout). */
+  fb_core1_dispatch(fb_c2p_bottom_job,
+                    fb_planar_scratch + FB_C2P_HALF_DST_WORDS);
 
   /* Top half: Core 0 runs the worker directly, in parallel with Core 1. */
   fb_c2p_half(fb_planar_scratch,
               fb_chunked_buffer,
               fb_chunked_buffer + FB_C2P_HALF_SRC_BYTES);
 
-  /* Wait for Core 1 to finish its half. The pop is a synchronization
+  /* Wait for Core 1 to finish its half. The join is a synchronization
    * barrier: pico-sdk's FIFO primitives include DMB/DSB internally, so
    * Core 1's planar writes are guaranteed visible to Core 0 by the
    * time this returns. */
-  (void)multicore_fifo_pop_blocking();
+  fb_core1_wait();
 }
 
 /* Thumb asm (fb_chunked_asm.S): the chunk-reversed copy via ldmia/stmia.

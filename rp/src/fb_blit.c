@@ -40,6 +40,26 @@ static inline int clip_axis(int start, int len, int max, int *src_off) {
   return len;
 }
 
+/* Like clip_axis but clips [start, start+len) to an arbitrary [lo, hi)
+ * window instead of [0, max). Used by the band-clipped blits so two cores
+ * can render disjoint horizontal bands of the same buffer (Story 5.8
+ * dual-core). */
+static inline int clip_axis_band(int start, int len, int lo, int hi,
+                                 int *src_off) {
+  if (start < lo) {
+    *src_off = lo - start;
+    len -= lo - start;
+    start = lo;
+  } else {
+    *src_off = 0;
+  }
+  if (start + len > hi) {
+    len = hi - start;
+  }
+  if (len < 0) len = 0;
+  return len;
+}
+
 void __not_in_flash_func(fb_fill_rect)(int x, int y, int w, int h,
                                        uint8_t color) {
   int sox, soy; /* clip offsets unused for fill */
@@ -56,16 +76,16 @@ void __not_in_flash_func(fb_fill_rect)(int x, int y, int w, int h,
   }
 }
 
-void __not_in_flash_func(fb_blit)(const struct FB_BITMAP *bm, int dst_x,
-                                  int dst_y) {
+void __not_in_flash_func(fb_blit_band)(const struct FB_BITMAP *bm, int dst_x,
+                                       int dst_y, int band_y0, int band_y1) {
   if (!bm || !bm->data) return;
   int sox, soy;
   int cw = clip_axis(dst_x, bm->width, FB_CHUNKED_W, &sox);
-  int ch = clip_axis(dst_y, bm->height, FB_CHUNKED_H, &soy);
+  int ch = clip_axis_band(dst_y, bm->height, band_y0, band_y1, &soy);
   if (cw <= 0 || ch <= 0) return;
 
   int cx = dst_x < 0 ? 0 : dst_x;
-  int cy = dst_y < 0 ? 0 : dst_y;
+  int cy = dst_y < band_y0 ? band_y0 : dst_y;
   uint8_t *dst = fb_chunked_buffer + (size_t)cy * FB_CHUNKED_W + cx;
   const uint8_t *src = bm->data + (size_t)soy * bm->width + sox;
   for (int row = 0; row < ch; row++) {
@@ -75,16 +95,22 @@ void __not_in_flash_func(fb_blit)(const struct FB_BITMAP *bm, int dst_x,
   }
 }
 
-void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
-                                      int dst_y, uint8_t key) {
+void __not_in_flash_func(fb_blit)(const struct FB_BITMAP *bm, int dst_x,
+                                  int dst_y) {
+  fb_blit_band(bm, dst_x, dst_y, 0, FB_CHUNKED_H);
+}
+
+void __not_in_flash_func(fb_blit_key_band)(const struct FB_BITMAP *bm,
+                                           int dst_x, int dst_y, uint8_t key,
+                                           int band_y0, int band_y1) {
   if (!bm || !bm->data) return;
   int sox, soy;
   int cw = clip_axis(dst_x, bm->width, FB_CHUNKED_W, &sox);
-  int ch = clip_axis(dst_y, bm->height, FB_CHUNKED_H, &soy);
+  int ch = clip_axis_band(dst_y, bm->height, band_y0, band_y1, &soy);
   if (cw <= 0 || ch <= 0) return;
 
   int cx = dst_x < 0 ? 0 : dst_x;
-  int cy = dst_y < 0 ? 0 : dst_y;
+  int cy = dst_y < band_y0 ? band_y0 : dst_y;
   uint8_t *dst = fb_chunked_buffer + (size_t)cy * FB_CHUNKED_W + cx;
   const uint8_t *src = bm->data + (size_t)soy * bm->width + sox;
   for (int row = 0; row < ch; row++) {
@@ -92,4 +118,9 @@ void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
     dst += FB_CHUNKED_W;
     src += bm->width;
   }
+}
+
+void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
+                                      int dst_y, uint8_t key) {
+  fb_blit_key_band(bm, dst_x, dst_y, key, 0, FB_CHUNKED_H);
 }
