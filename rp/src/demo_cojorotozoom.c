@@ -36,6 +36,7 @@
 #include "fb.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
+#include "hardware/interp.h"
 #include "palette.h"
 #include "pico/platform.h"
 #include "pico/time.h"
@@ -50,6 +51,13 @@ extern const struct FB_FONT font8x8;
  * writes) -- none of the timing-sensitive cart-bus / PIO code that a
  * global -O3 destabilised lives here. */
 #pragma GCC optimize("O3")
+
+/* The rotozoom uses INTERP0 as a hardware texel-address generator (see
+ * roto_render_frame). The lane shifts/masks below hard-code a 256-wide,
+ * 64-tall power-of-two texture, so guard those assumptions. */
+_Static_assert(COJO_TEX_W == 256 && COJO_TEX_WMASK == 255 &&
+                   COJO_TEX_HMASK == 63,
+               "interp rotozoom config assumes a 256x64 power-of-two texture");
 
 /* sin/cos table: 256 steps over 2*pi, scaled to +-256 (= +-1.0 in
  * 8.8 fixed point). cos(i) = sin256[(i + 64) & 255]. */
@@ -396,18 +404,39 @@ static void __not_in_flash_func(roto_render_frame)(void) {
   int u_row = cu - 160 * dux - 100 * duy;
   int v_row = cv - 160 * dvx - 100 * dvy;
 
+  /* RP2040 interpolator as the texel-address generator -- the canonical
+   * "affine texture mapping" use of INTERP0. With ACCUM0=u, ACCUM1=v
+   * (8.8) and BASE2 = texture base:
+   *   lane 0 (shift 8, mask 0..7)  -> (u >> 8) & 255       == &WMASK
+   *   lane 1 (shift 0, mask 8..13) -> ((v >> 8) & 63) << 8 == (&HMASK)*W
+   *   PEEK_FULL = BASE2 + lane0 + lane1 = the texel byte address.
+   * interp_add_accumulator advances u/v by the per-pixel deltas. This
+   * collapses the ~6 shift/mask/add address-gen instructions + 2 coord
+   * adds into ~3 single-cycle SIO accesses per pixel. The generated
+   * address is validated byte-identical to the plain C expression
+   *   cojo_texture_data[((v>>8)&HMASK)*COJO_TEX_W + ((u>>8)&WMASK)].
+   * Re-armed every frame so nothing else can leave INTERP0 misconfigured. */
+  interp_config c0 = interp_default_config();
+  interp_config_set_shift(&c0, 8);
+  interp_config_set_mask(&c0, 0, 7);
+  interp_set_config(interp0, 0, &c0);
+  interp_config c1 = interp_default_config();
+  interp_config_set_shift(&c1, 0);
+  interp_config_set_mask(&c1, 8, 13);
+  interp_set_config(interp0, 1, &c1);
+  interp0->base[2] = (uintptr_t)cojo_texture_data;
+
   for (int sy = 0; sy < FB_CHUNKED_H; sy++) {
-    int u = u_row;
-    int v = v_row;
+    interp0->accum[0] = (uint32_t)u_row;
+    interp0->accum[1] = (uint32_t)v_row;
     uint8_t *row = fb_chunked_buffer + sy * FB_CHUNKED_W;
     for (int sx = 0; sx < FB_CHUNKED_W; sx++) {
-      uint8_t texel = cojo_texture_data[(((v >> 8) & COJO_TEX_HMASK) * COJO_TEX_W) +
-                                ((u >> 8) & COJO_TEX_WMASK)];
+      uint8_t texel = *(const uint8_t *)interp_peek_full_result(interp0);
       if (texel != COJO_TEX_TRANSPARENT) {
         row[sx] = texel; /* logo over the background; black = see-through */
       }
-      u += dux;
-      v += dvx;
+      interp_add_accumulator(interp0, 0, (uint32_t)dux);
+      interp_add_accumulator(interp0, 1, (uint32_t)dvx);
     }
     u_row += duy;
     v_row += dvy;

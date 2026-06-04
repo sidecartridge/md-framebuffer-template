@@ -130,7 +130,8 @@ pico_add_extra_outputs(${PROJECT_NAME})
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${LINK_LIBRARIES}        # External or additional libraries passed as variables
     hardware_flash           # Flash memory access
-    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library   
+    hardware_interp          # SIO interpolators (cojorotozoom texel addressing)
+    no-OS-FatFS-SD-SDIO-SPI-RPi-Pico                # FATFS library
     pico_stdlib              # Core functionality
     pico_multicore          # Multicore support
     settings                 # Custom settings library
