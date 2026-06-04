@@ -61,7 +61,7 @@
                    "NOT VALID", "NOT VALID", "NOT VALID", "NOT VALID", \
                    "NOT VALID"}
 
-// This is the APP KEY that will be used to identify the current app   
+// This is the APP KEY that will be used to identify the current app
 // It mmust be a unique UUID4 for each app, and must be the one used in the
 // app.json file as descriptor of the app
 #ifndef CURRENT_APP_UUID_KEY
