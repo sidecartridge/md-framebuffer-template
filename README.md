@@ -311,11 +311,61 @@ audio_set_fill_callback(my_fill);   // pass NULL for silence
 
 Either way, **`audio_render_frame()` must be called each loop iteration**
 (it self-paces to ~50 Hz). There's also `audio_play_yms_file(path)` to
-stream a `.YMS` file from SD.
+stream a `.YMS` file from SD — see §6.
 
 ---
 
-## 6. The main loop, in one picture
+## 6. SD card (`sdcard.h` + FatFs)
+
+The cartridge has a microSD slot, and **the template already mounts it for
+you at boot** — so reading and writing files is just standard
+[FatFs](http://elm-chan.org/fsp/) (`f_open` / `f_read` / `f_write` /
+`f_close` / `f_opendir` …). Good for level data, save games, bitmaps,
+streamed audio, anything that won't fit in flash.
+
+### It's mounted at boot
+
+`emul_start()` already does this (keep it; it's part of the boot block):
+
+```c
+FATFS fsys;
+const char *folder = "/myapp";   // your app's working directory on the card
+if (sdcard_initFilesystem(&fsys, folder) != SDCARD_INIT_OK) {
+    // No card / unreadable. Decide: continue without SD, or treat as fatal.
+}
+```
+
+`sdcard_initFilesystem()` mounts the card and creates `folder` if missing.
+In the stock template the folder name comes from per-app config
+(`ACONFIG_PARAM_FOLDER`, default `/test`) so it can be changed from Booster
+without recompiling — hard-code your own string if you prefer.
+
+### Then just use FatFs
+
+```c
+#include "ff.h"
+
+FIL f;
+if (f_open(&f, "/myapp/level1.dat", FA_READ) == FR_OK) {
+    UINT n;
+    f_read(&f, buf, sizeof(buf), &n);   // n = bytes actually read
+    f_close(&f);
+}
+```
+
+Writing is the same with `FA_WRITE | FA_CREATE_ALWAYS` and `f_write`. Note
+**paths are absolute** (`/myapp/...`) — there's no per-app current
+directory. Handy helpers in `sdcard.h`: `sdcard_isMounted()`,
+`sdcard_dirExist(path)`, `sdcard_ensureFolder(path)` (mkdir-if-missing),
+and `sdcard_getMountedInfo(&total_mb, &free_mb)`.
+
+> Keep file I/O **out of the per-frame path** — SPI reads take many
+> milliseconds and will blow the ~19 ms VBL budget. Load at startup, or
+> stream a little per frame the way `audio.c` reads a `.YMS` in chunks.
+
+---
+
+## 7. The main loop, in one picture
 
 ```
 emul_start():
