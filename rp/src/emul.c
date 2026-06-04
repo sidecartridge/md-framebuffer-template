@@ -7,7 +7,7 @@
  *              ROM3 ring into the IKBD demux and re-renders the
  *              framebuffer.
  *
- * Story 1.2.12 stripped the previous u8g2-backed terminal subsystem
+ * The previous u8g2-backed terminal subsystem was stripped
  * (term.c, display.c, display_term.h). The cart-side UI is now driven
  * entirely by fb.c writing into the 32 KB low-res framebuffer at
  * $FA8300, which the m68k userfw VBL loop blits to ST screen each
@@ -36,7 +36,7 @@
 #include "select.h"
 #include "target_firmware.h"
 
-/* No sleep -- tight loop. Story 1.2.13's dirty-frame handshake means
+/* No sleep -- tight loop. The dirty-frame handshake means
  * the m68k only blits cart->ST when fb_publish() actually advances
  * the frame counter. The RP can rewrite the framebuffer at whatever
  * rate it wants; the m68k decides per VBL whether the new content is
@@ -112,7 +112,7 @@ void emul_start() {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
   }
 
-  // Audio source selection (Story 4.4 demo). Try to stream a
+  // Audio source selection. Try to stream a
   // .YMS file from the app folder first; on any failure (no SD,
   // file missing, bad header, rate mismatch) fall back to the
   // baked-in Ghostbusters G1 jingle so the demo still has audio.
@@ -126,7 +126,7 @@ void emul_start() {
   // Cartridge SELECT button -- apps can poll select_isPressed().
   select_configure();
 
-  // Bring up the Epic 5 demo dispatcher. demo_dispatcher_init takes
+  // Bring up the demo dispatcher. demo_dispatcher_init takes
   // ownership of the ESC key from ikbd.c (ESC now means "back to
   // menu" inside a demo and "exit to GEM" only when the menu is on
   // screen). The first dispatcher render paints the boot menu over

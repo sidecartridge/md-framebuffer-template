@@ -1,6 +1,6 @@
 /**
  * File: demo_menu.c
- * Description: Boot menu + demo dispatcher (Epic 5 Story 5.1).
+ * Description: Boot menu + demo dispatcher.
  *
  * Owns the boot menu UI (rendered into the same chunked framebuffer
  * the demos use) and the MENU <-> ACTIVE state machine.
@@ -32,7 +32,7 @@
 #include "sidecart_logo.h"
 #include "sidecart_text.h"
 
-/* Per-file -O3: the menu now runs a per-pixel rotozoom backdrop (Epic 6).
+/* Per-file -O3: the menu now runs a per-pixel rotozoom backdrop.
  * Pure compute -- no bus/PIO timing code here -- so opt it for speed. */
 #pragma GCC optimize("O3")
 

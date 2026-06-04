@@ -1,6 +1,6 @@
 /**
  * File: uridium_surface.h
- * Description: Uridium 'zinc' scroll surface (Epic 5 Story 5.2).
+ * Description: Uridium 'zinc' scroll surface.
  *
  * Source image: atarist-silly-demo/resources/uridium-zinc-c64.png
  * (3344x136 RGB, 4 colours). Repacked here to 2 bits/pixel,

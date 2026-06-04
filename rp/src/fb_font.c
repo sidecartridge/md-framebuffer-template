@@ -3,7 +3,7 @@
  * Description: Bitmap font renderer. Ported from md-sprites-demo's
  *              vga_font.c. Behavioural deltas from upstream:
  *               - Renders into `fb_screen.framebuffer` directly (no
- *                 hidden back buffer, single-FB design from Story 1.2 Q1).
+ *                 hidden back buffer, single-FB design).
  *               - The printf-family helpers (`font_printf`,
  *                 `font_print_int/uint/float`) were stripped so the
  *                 framebuffer text path doesn't pull newlib's

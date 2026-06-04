@@ -6,8 +6,8 @@
  * Public state (extern globals declared below) and inline setters are
  * kept verbatim from upstream so font assets ported alongside this
  * module (e.g. font6x8.h) drop in without modification. The renderer
- * writes directly into `fb_screen.framebuffer` (single-FB design,
- * Story 1.2 Q1) — there is no back buffer here.
+ * writes directly into `fb_screen.framebuffer` (single-FB design)
+ * — there is no back buffer here.
  */
 
 #ifndef FB_FONT_H

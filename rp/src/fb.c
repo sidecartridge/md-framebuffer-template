@@ -2,7 +2,7 @@
  * File: fb.c
  * Description: Framebuffer module — owns `fb_screen` and brings up the
  *              single 32 KB cartridge framebuffer the m68k reads each
- *              VBL (single-FB design, Story 1.2 Q1).
+ *              VBL (single-FB design).
  *
  * The framebuffer base is derived from the linker symbol
  * `__rom_in_ram_start__` plus `CART_FRAMEBUFFER_OFFSET`, so the
@@ -24,7 +24,7 @@
 #include "ikbd.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
 
-/* VBL frame-sync (Epic 5). The m68k does a cart-bus read at
+/* VBL frame-sync. The m68k does a cart-bus read at
  * $FB8400 after each blit (see VBLSYNC_ADDR in userfw.s); the
  * commemul ring captures it with low-16 = 0x84xx. fb_pump_rom3
  * routes ROM3 samples to both the IKBD demux and this detector;
@@ -43,7 +43,7 @@
 static volatile uint32_t s_vbl_seen;
 static uint32_t s_vbl_published;
 
-/* Story 2.3 demo sprite. Multi-colour 16x16 ball with a transparent
+/* Demo sprite. Multi-colour 16x16 ball with a transparent
  * background (key = 0xFF; transparent corners give it a rounded look
  * against the black background). Generated once at fb_init so apps
  * can see what a typical sprite blob looks like in code -- real apps
@@ -103,8 +103,7 @@ int fb_init(const struct FB_MODE *mode) {
    * clean baseline. The full shared region is already zeroed by
    * emul_start's ERASE_FIRMWARE_IN_RAM, so this is defensive against
    * future callers that might re-init fb without erasing. (Used to
-   * live in chandler_init; relocated in Epic 3 Story 3.8 when
-   * chandler was removed.) */
+   * live in chandler_init; relocated when chandler was removed.) */
   *fb_frame_counter = 0;
 
   /* Launch Core 1 with the chunky-to-planar bottom-half worker. */
@@ -113,12 +112,11 @@ int fb_init(const struct FB_MODE *mode) {
   /* Build the demo sprite once. */
   fb_build_demo_sprite();
 
-  /* Story 2.1: paint the chunked buffer + run the conversion once so
+  /* Paint the chunked buffer + run the conversion once so
    * the cart framebuffer is in a deterministic state before the main
    * loop spins up. fb_render_static() is left defined for now but no
    * longer called -- its planar writes would be overwritten by the
-   * conversion every frame. Story 2.2 will port it to chunked and
-   * reactivate it. */
+   * conversion every frame. */
   fb_render_frame();
 
   DPRINTF("FB: %dx%d, %d bpp at %p (size=%u)\n", fb_screen.width,
@@ -135,19 +133,18 @@ void fb_clear(void) {
   memset(fb_screen.framebuffer, 0xFF, CART_FRAMEBUFFER_SIZE);
 }
 
-/* Story 2.2 smoke test: full template UI rendered via the chunked path.
+/* Full template UI rendered via the chunked path.
  *
  * fb_font's render_text now writes directly into fb_chunked_buffer (one
  * byte per pixel, palette index in low nibble). fb_render_frame composes
  * the whole frame from scratch each iteration (chunked clear → static UI
  * → dynamic UI), then runs fb_chunky_to_planar once to publish into the
  * cart FB. Per-frame work is dominated by the conversion, not the text
- * writes, so the surgical-erase optimisation from Story 1.2.15 no longer
- * applies. */
+ * writes, so the surgical-erase optimisation no longer applies. */
 
 static uint32_t fb_frame_tick = 0;
 
-/* Story 2.4 instrumentation. The previous frame's measurements get
+/* Timing instrumentation. The previous frame's measurements get
  * rendered as part of the current frame -- there's no way to render
  * timings *for* a frame *into* that same frame. Stale-by-one is fine
  * for a visual indicator. */
@@ -230,7 +227,7 @@ void fb_render_frame(void) {
     font_print(ch);
   }
 
-  /* Story 2.3: demo sprite bouncing inside the area between the static
+  /* Demo sprite bouncing inside the area between the static
    * text rows. Two independent linear ping-pongs at different periods
    * give a Lissajous-style trajectory without needing trig tables. */
   unsigned int t = fb_frame_tick / 2u; /* slow down vs RP loop speed */

@@ -1,6 +1,6 @@
 /**
  * File: demo_cojorotozoom.c
- * Description: Epic 5 Story 5.7 -- "cojorotozoom" colour rotozoomer.
+ * Description: "cojorotozoom" colour rotozoomer.
  *
  * A classic demoscene rotozoom of the C23CUT.PNG logo, over a
  * scrolling rusted girder grid (ported from the Uridium demo):

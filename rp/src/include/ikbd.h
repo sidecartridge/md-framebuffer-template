@@ -1,6 +1,6 @@
 /**
  * File: ikbd.h
- * Description: IKBD keyboard ingest + demux (Epic 3, keyboard-only).
+ * Description: IKBD keyboard ingest + demux (keyboard-only).
  *
  * The m68k Timer-B IKBD handler (target/atarist/src/userfw.s) reads
  * the keyboard ACIA at $FFFFFC00/02 and forwards every received byte
@@ -26,9 +26,9 @@
  * $01) press+release within 200 ms triggers CMD_BOOT_GEM via the
  * cart command sentinel to exit userfw cleanly.
  *
- * Mouse and joystick decoding were both attempted during Epic 3 but
- * proved unreliable (same byte-loss / demux-desync class of bug).
- * Both are documented as deferred in docs/epics/epic-99-backlog.md.
+ * Mouse and joystick decoding were both attempted but
+ * proved unreliable (same byte-loss / demux-desync class of bug)
+ * and are deferred.
  * Apps that want them can drop the $12 / $1A IKBD commands in
  * userfw.s and add their own packet-emit branches in this demux.
  */
@@ -85,8 +85,8 @@ bool ikbd_pop_key(ikbd_key_event_t *out);
 
 /* Enable / disable the built-in ESC press+release -> CMD_BOOT_GEM
  * sentinel write. Default = true (backward-compatible with the
- * Epic 3 ergonomic of "press ESC to exit"). Apps that want to own
- * the ESC key (e.g. Epic 5's menu+demo dispatcher that uses ESC for
+ * ergonomic of "press ESC to exit"). Apps that want to own
+ * the ESC key (e.g. the menu+demo dispatcher that uses ESC for
  * "back to menu") call ikbd_set_esc_auto_exit(false) once at boot.
  * ESC events are still delivered via ikbd_pop_key() regardless of
  * the setting. */

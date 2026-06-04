@@ -1,7 +1,6 @@
 /**
  * File: fb_chunked.h
- * Description: Chunked-pixel framebuffer + chunky-to-planar publish path
- *              (Epic 2 Story 2.1).
+ * Description: Chunked-pixel framebuffer + chunky-to-planar publish path.
  *
  * App code draws into `fb_chunked_buffer` (one byte per pixel, palette
  * index in the low nibble). A single conversion pass per frame
@@ -43,7 +42,7 @@ extern uint8_t fb_chunked_buffer[FB_CHUNKED_SIZE];
  * deadlock inside pico-sdk's launch handshake. */
 void fb_chunked_init(void);
 
-/* Run a job on Core 1, in parallel with Core 0 (Story 5.8 dual-core).
+/* Run a job on Core 1, in parallel with Core 0 (dual-core).
  * `fb_core1_dispatch` hands `job(arg)` to the parked Core 1 worker and
  * returns immediately; the caller then does its own half of the work and
  * calls `fb_core1_wait()` to join. The fn+arg are passed through the

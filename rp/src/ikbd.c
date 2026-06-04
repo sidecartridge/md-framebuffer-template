@@ -1,6 +1,6 @@
 /**
  * File: ikbd.c
- * Description: IKBD keyboard ingest + demux (Epic 3, keyboard-only).
+ * Description: IKBD keyboard ingest + demux (keyboard-only).
  *
  * Raw byte ring filled by ikbd_consume_rom3_sample (called directly
  * from `commemul_poll(ikbd_consume_rom3_sample)` in the emul.c main
@@ -17,8 +17,8 @@
  * as single bytes; their follow bytes may emit one-shot spurious
  * key events but the demux never sticks. Avoiding the state
  * machine eliminates the "stuck in D_COLLECT after losing the last
- * follow byte" failure mode that broke keyboard input in the
- * Story 3.7 attempt.
+ * follow byte" failure mode that broke keyboard input in an
+ * earlier attempt.
  */
 
 #include "ikbd.h"

@@ -3,13 +3,13 @@
  * Description: Framebuffer module — owns the single 32 KB cartridge
  *              framebuffer the m68k reads each VBL.
  *
- * Story 1.2 single-FB design (Q1): there is exactly one framebuffer in
+ * Single-FB design: there is exactly one framebuffer in
  * the shared region (`$FA8300`, 32 KB, 320x200x4bpp). Double-buffering
  * happens on the ST side; the RP just writes into this one buffer.
  *
- * This header is introduced in Story 1.2.4 (alongside fb_font.* and
- * fb_draw.*) so the ported font/draw modules have a stable target
- * type. Story 1.2.5 adds fb.c which defines `fb_screen` and provides
+ * This header is introduced alongside fb_font.* and
+ * fb_draw.* so the ported font/draw modules have a stable target
+ * type. fb.c defines `fb_screen` and provides
  * the init / clear / address-accessor entry points.
  */
 
@@ -30,7 +30,7 @@ struct FB_MODE {
 
 /* Mirrors md-sprites-demo's VGA_SCREEN but with a single framebuffer
  * pointer instead of A/B/current/hidden (we don't keep a back buffer in
- * cartridge — Story 1.2 Q1). The ported text renderer writes into
+ * cartridge). The ported text renderer writes into
  * `framebuffer` directly. */
 struct FB_SCREEN {
   unsigned int *framebuffer;

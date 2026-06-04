@@ -59,7 +59,8 @@ build/
 build-*/
 dist/
 .cache/
-.claude/
+.claude/*
+!.claude/skills/
 docs/epics/
 __pycache__/
 *.pyc

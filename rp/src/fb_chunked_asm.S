@@ -1,6 +1,6 @@
 @ File: fb_chunked_asm.S
 @
-@ Hand-written Thumb assembly: fb_chunky_to_planar (Epic 2 Story 2.4).
+@ Hand-written Thumb assembly: fb_chunky_to_planar.
 @ Multiplication-based bit transpose, no LUT.
 @
 @ Per 4-pixel group (uint32 q, palette index in low nibble of each byte):
@@ -47,7 +47,7 @@
 @ a chunked-buffer range and the corresponding planar destination;
 @ the function makes no assumption about the FULL buffer size, so it
 @ can be invoked twice (one half per core) for the Core 0 / Core 1
-@ parallel pattern from Story 2.4b.
+@ parallel pattern.
 @
 @ Register allocation (during inner loop):
 @   r0 = dst (advances by 8 per block)
@@ -156,7 +156,7 @@ fb_c2p_half:
 @ void fb_chunk_reverse_copy48(uint8_t *dst, const uint8_t *src_last,
 @                              uint32_t count);
 @
-@ The chunk-reversed publish from fb_planar_publish (Story 5.8). Copies
+@ The chunk-reversed publish from fb_planar_publish. Copies
 @ `count` 48-byte (12-word) chunks to `dst` (forward) from `src_last`
 @ (which points at the LAST chunk) in REVERSE chunk order: dst chunk k
 @ gets src chunk (count-1-k). Each chunk's 48 bytes are copied forward.

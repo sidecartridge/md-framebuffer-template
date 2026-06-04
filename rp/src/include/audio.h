@@ -19,7 +19,7 @@
  *      invokes `cb(buf, bytes)` once per VBL refill with
  *      `bytes` set to the m68k's per-VBL consumption rate; the
  *      callback writes exactly that many bytes into `buf`. Use for
- *      streaming sources (e.g. SD-backed PCM in Story 4.4).
+ *      streaming sources (e.g. SD-backed PCM).
  *
  * Sample format is whatever the m68k Timer-B handler expects --
  * the default handler in userfw.s reads 2 bytes per sample

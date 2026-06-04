@@ -1,7 +1,7 @@
 /**
  * File: fb_blit.h
  * Description: Bitmap / sprite blit primitives for the chunked
- *              framebuffer (Epic 2 Story 2.3).
+ *              framebuffer.
  *
  * All blits target `fb_chunked_buffer` (one byte per pixel, palette
  * index in low nibble). Bitmaps are flat `uint8_t` arrays in
@@ -50,7 +50,7 @@ void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
 /** Band-clipped variants: as above but clip vertically to the half-open
  *  row window [band_y0, band_y1) instead of the full screen. Used for
  *  per-core dual-core rendering -- two cores each draw a disjoint band of
- *  the same buffer with no overlap (Story 5.8). The full-screen forms
+ *  the same buffer with no overlap. The full-screen forms
  *  above are just these with band = [0, FB_CHUNKED_H). */
 void __not_in_flash_func(fb_blit_band)(const struct FB_BITMAP *bm, int dst_x,
                                        int dst_y, int band_y0, int band_y1);
