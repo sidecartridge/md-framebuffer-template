@@ -13,6 +13,20 @@ The headline idea: **you write into one byte-per-pixel buffer, call
 `fb_publish()` once a frame, and the picture appears on the ST — tear-free
 at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
 
+### You develop 100% on the RP2040 side — the framework does the heavy lifting
+
+- **Dual (page-flipped) framebuffer on the Atari ST side** — tear-free
+  display, fully managed for you.
+- **Real 50 Hz**, locked to the ST's vertical blank.
+- **~19 ms of compute every VBL** for your app to draw its frame.
+- **Chunked drawing on the RP2040** — you write one byte per pixel; the
+  framework does the chunked → Atari ST planar conversion for you.
+- **~1 ms per VBL** for that chunky→planar conversion (split across both
+  cores), so it barely eats into your frame budget.
+- **~6 kHz, 6-bit sampled sound** out the YM2149.
+- **Atari ST keyboard handled on the RP2040** — decoded scancodes
+  delivered straight to your app.
+
 > This repo ships with a 4-demo showcase + an animated menu.
 > This guide is about **starting your own app**: what to remove, the API
 > you keep, and a minimal example. For the build toolchain and flashing,

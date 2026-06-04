@@ -23,6 +23,15 @@ a colourful 320×200 screen up matters. You draw a 320×200 16-colour
 framebuffer in the Pico's RAM and the firmware blits it to the ST each
 VBL (50 Hz), with keyboard input and YM audio for free.
 
+**You develop 100% on the RP2040 side — the framework does the heavy
+lifting:** a dual (page-flipped) framebuffer on the Atari ST side
+(tear-free, managed for you); real 50 Hz locked to the ST's vertical
+blank; **~19 ms of compute every VBL** to draw your frame; chunked
+drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
+conversion done for you in **~1 ms per VBL** (split across both cores);
+**~6 kHz, 6-bit sampled sound** out the YM2149; and Atari ST keyboard
+handled on the RP2040 with decoded scancodes delivered to your app.
+
 ## The model (read this first)
 
 The app runs on the RP2040 in the cartridge. You **draw into one
