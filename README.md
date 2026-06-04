@@ -58,6 +58,19 @@ the m68k side.
 The template includes a boot menu and four demos as worked examples.
 For your own app, remove them and wire your code into the main loop.
 
+**The quick way:** `examples/hello_text/apply.sh` does all of this for you
+— it backs up `rp/` to `rp.bak`, deletes the demo/menu files below, and
+drops in a minimal `emul.c` + `CMakeLists.txt`. Run it, then build:
+
+```bash
+examples/hello_text/apply.sh
+./build.sh pico_w release 44444444-4444-4444-8444-444444444444
+# revert anytime with:  rm -rf rp && mv rp.bak rp
+```
+
+The rest of this section is what `apply.sh` automates, for when you'd
+rather strip the demos by hand.
+
 ### Files to **delete** (demo / menu only)
 
 ```
