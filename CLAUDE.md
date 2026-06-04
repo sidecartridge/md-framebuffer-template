@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-See also: `programming.md` (full shared-region table and budget rules), `README.md` (high-level region/userfw overview), `AGENTS.md` (overlapping playbook + troubleshooting table), `CHANGELOG.md` (fastest way to spot breaking changes between template versions — e.g. v1.1.0's `init_romemul` signature change, v1.2.0's region rearrangement, v1.2.1's seed-must-advance invariant).
+See also: `programming.md` (full shared-region table and budget rules), `README.md` (high-level region/userfw overview), `AGENTS.md` (overlapping playbook + troubleshooting table), `CHANGELOG.md` (release history).
 
 ## ⛔ Never reference the epic docs in shipped material
 

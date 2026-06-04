@@ -47,6 +47,10 @@ deep-dive; `examples/hello_text/` is a minimal working app.
 
 ## Starting a fresh app
 
+**Quick path:** `examples/hello_text/apply.sh` does all of the below — it
+backs up `rp/` to `rp.bak`, deletes the demo/menu files, and installs a
+minimal `emul.c` + `CMakeLists.txt`. The manual steps:
+
 1. **Delete the demos**: `rp/src/demo_*.c` (5 files), `rp/src/include/demo.h`,
    and the asset headers (`sidecart_logo.h`, `sidecart_text.h`,
    `solid3d.h`, `sprites_data.h`, `cojo_texture.h`, `cojo_font.h`,
@@ -88,6 +92,14 @@ audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
 audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL, live
 audio_render_frame();                          // call every loop iteration
 ```
+
+**SD card:** the microSD is already mounted at boot
+(`sdcard_initFilesystem()` in `emul_start()`). Read/write with standard
+FatFs — `#include "ff.h"`, then `f_open` / `f_read` / `f_write` /
+`f_close` on absolute paths. Helpers in `sdcard.h`: `sdcard_isMounted()`,
+`sdcard_ensureFolder()`, `sdcard_dirExist()`. Keep file I/O **out of the
+per-frame loop** (SPI reads cost ms and blow the ~19 ms budget) — load at
+startup or stream small chunks like `audio.c` does for `.YMS`.
 
 Main loop shape (in `emul_start()`):
 
