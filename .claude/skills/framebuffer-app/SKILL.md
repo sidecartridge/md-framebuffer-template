@@ -101,6 +101,15 @@ FatFs — `#include "ff.h"`, then `f_open` / `f_read` / `f_write` /
 per-frame loop** (SPI reads cost ms and blow the ~19 ms budget) — load at
 startup or stream small chunks like `audio.c` does for `.YMS`.
 
+**Per-app config** (persistent settings, editable from Booster without
+recompiling): defaults live in `rp/src/aconfig.c` `defaultEntries[]` as
+`{"KEY", SETTINGS_TYPE_STRING|INT|BOOL, "default"}`, with the key macro in
+`aconfig.h`. Read: `settings_find_entry(aconfig_getContext(), "KEY")` →
+`->value` (always a string; `atoi()` for ints). Write:
+`settings_put_string` / `_integer` / `_bool(aconfig_getContext(), "KEY",
+v)` then `settings_save(aconfig_getContext(), true)`. (This is how the SD
+folder name `ACONFIG_PARAM_FOLDER` is supplied.)
+
 Main loop shape (in `emul_start()`):
 
 ```c

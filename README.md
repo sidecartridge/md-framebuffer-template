@@ -365,7 +365,44 @@ and `sdcard_getMountedInfo(&total_mb, &free_mb)`.
 
 ---
 
-## 7. The main loop, in one picture
+## 7. Per-app config (`aconfig`)
+
+Each app gets a small key-value store in flash, **editable from the
+Booster app without recompiling** — handy for things like a working
+folder, a difficulty level, or a default mode. (It's how the SD folder
+name above is supplied.)
+
+Declare your defaults in `rp/src/aconfig.c` (`defaultEntries[]`) and the
+key name in `rp/src/include/aconfig.h`:
+
+```c
+// aconfig.h
+#define ACONFIG_PARAM_SPEED "SPEED"
+
+// aconfig.c -- defaultEntries[]
+{ACONFIG_PARAM_SPEED, SETTINGS_TYPE_INT, "3"},   // type: _STRING | _INT | _BOOL
+```
+
+Read it anywhere after boot (values are always stored as strings):
+
+```c
+#include "aconfig.h"
+#include "settings.h"
+
+SettingsConfigEntry *e = settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_SPEED);
+int speed = e ? atoi(e->value) : 3;     // fall back to a default if unset
+```
+
+Write + persist (e.g. to save progress):
+
+```c
+settings_put_integer(aconfig_getContext(), ACONFIG_PARAM_SPEED, speed);  // or _string / _bool
+settings_save(aconfig_getContext(), true);   // true = disable IRQs during the flash write
+```
+
+---
+
+## 8. The main loop, in one picture
 
 ```
 emul_start():
