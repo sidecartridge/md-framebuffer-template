@@ -17,6 +17,12 @@
  * PIO timing code here. */
 #pragma GCC optimize("O3")
 
+/* Hand-written Thumb worker (fb_blit_asm.S): one colour-keyed row, copy
+ * cw bytes src->dst skipping bytes == key. Unrolled x4 to amortise the
+ * per-pixel loop control that dominates the -O3 C version. */
+extern void fb_blit_key_row(uint8_t *dst, const uint8_t *src, uint32_t cw,
+                            uint8_t key);
+
 /* Intersect [start, start + len) with [0, max) and return the clipped
  * length and the (positive) offset into the source. */
 static inline int clip_axis(int start, int len, int max, int *src_off) {
@@ -82,10 +88,7 @@ void __not_in_flash_func(fb_blit_key)(const struct FB_BITMAP *bm, int dst_x,
   uint8_t *dst = fb_chunked_buffer + (size_t)cy * FB_CHUNKED_W + cx;
   const uint8_t *src = bm->data + (size_t)soy * bm->width + sox;
   for (int row = 0; row < ch; row++) {
-    for (int col = 0; col < cw; col++) {
-      uint8_t p = src[col];
-      if (p != key) dst[col] = p;
-    }
+    fb_blit_key_row(dst, src, (uint32_t)cw, key);
     dst += FB_CHUNKED_W;
     src += bm->width;
   }
