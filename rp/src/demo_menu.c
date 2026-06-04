@@ -102,6 +102,7 @@ typedef enum {
 
 static demo_state_t s_state;
 static const demo_module_t *s_active;
+static int s_menu_sel; /* highlighted menu item (0..MENU_ITEM_COUNT-1) */
 
 #define MENU_ITEM_COUNT 4
 static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
@@ -119,6 +120,9 @@ static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
 #define IKBD_SC_3   0x04u
 #define IKBD_SC_4   0x05u
 #define IKBD_SC_D   0x20u  /* hidden: toggle DRAW/C2P readout (menu + demos) */
+#define IKBD_SC_RET 0x1Cu  /* Return = launch the highlighted item */
+#define IKBD_SC_UP  0x48u  /* move selection up */
+#define IKBD_SC_DOWN 0x50u /* move selection down */
 
 /* Beating logo palette: the silhouette ramp (idx 1..4) cycles through the
  * spectrum via three phase-shifted sines (classic plasma colour); idx 0
@@ -156,6 +160,7 @@ static void menu_beat_palette(uint32_t f) {
    * the other is at full beat -- the screen is never fully dark. */
   menu_logo_ramp(s_menu_palette, 1, f, 0, 0);
   menu_logo_ramp(s_menu_palette, 5, f, 128, 128);
+  s_menu_palette[14] = PALETTE_RGB(7, 4, 0);   /* selection highlight (amber) */
   s_menu_palette[15] = PALETTE_RGB(0, 0, 1);   /* dark backdrop */
   palette_set(s_menu_palette);
 }
@@ -256,17 +261,24 @@ static void __not_in_flash_func(render_menu)(void) {
   font_move(FB_CHUNKED_W / 2, 12);
   font_print("S I D E C A R T R I D G E");
 
+  static const char *const items[MENU_ITEM_COUNT] = {
+      "1.  Uridium scroll", "2.  3D Solid", "3.  Multi-sprite swarm",
+      "4.  Cojorotozoom"};
   font_align(FONT_ALIGN_LEFT);
-  font_move(72, 76);
-  font_print("1.  Uridium scroll");
-  font_move(72, 92);
-  font_print("2.  3D Solid");
-  font_move(72, 108);
-  font_print("3.  Multi-sprite swarm");
-  font_move(72, 124);
-  font_print("4.  Cojorotozoom");
-  font_move(72, 144);
-  font_print("ESC  Exit to GEM");
+  for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+    int iy = 76 + i * 16;
+    if (i == s_menu_sel) {
+      fb_fill_rect(56, iy - 2, 208, 12, 14); /* amber highlight bar */
+      font_set_color(15);                    /* dark text on the bar */
+    } else {
+      font_set_color(0);                     /* white text */
+    }
+    font_move(72, iy);
+    font_print(items[i]);
+  }
+  font_set_color(0);
+  font_move(60, 144);
+  font_print("UP/DN  RET=start  ESC=exit");
 
   /* Hidden DRAW/C2P readout (toggled with 'D'), previous frame's numbers
    * on a dark strip at the bottom. */
@@ -306,6 +318,19 @@ void demo_dispatcher_init(void) {
   DPRINTF("demo_dispatcher_init: MENU state, ESC owned by dispatcher\n");
 }
 
+/* Launch the demo at menu index `idx` (shared by the number keys and
+ * Return on the highlighted item). */
+static void launch_demo(unsigned idx) {
+  if (idx >= MENU_ITEM_COUNT) return;
+  s_active = s_menu[idx];
+  s_state = DEMO_STATE_ACTIVE;
+  DPRINTF("dispatcher: starting demo '%s'\n",
+          s_active->name ? s_active->name : "(unnamed)");
+  if (s_active->init) {
+    s_active->init();
+  }
+}
+
 void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
   if (!k->is_press) {
     /* Forward releases to the active demo (it may track held keys);
@@ -330,22 +355,21 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
         DPRINTF("dispatcher: ESC from menu -> exit to GEM\n");
         exit_to_gem();
         break;
+      case IKBD_SC_UP:
+        s_menu_sel = (s_menu_sel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
+        break;
+      case IKBD_SC_DOWN:
+        s_menu_sel = (s_menu_sel + 1) % MENU_ITEM_COUNT;
+        break;
+      case IKBD_SC_RET:
+        launch_demo((unsigned)s_menu_sel);
+        break;
       case IKBD_SC_1:
       case IKBD_SC_2:
       case IKBD_SC_3:
-      case IKBD_SC_4: {
-        unsigned idx = (unsigned)(k->scancode - IKBD_SC_1);
-        if (idx < MENU_ITEM_COUNT) {
-          s_active = s_menu[idx];
-          s_state = DEMO_STATE_ACTIVE;
-          DPRINTF("dispatcher: starting demo '%s'\n",
-                  s_active->name ? s_active->name : "(unnamed)");
-          if (s_active->init) {
-            s_active->init();
-          }
-        }
+      case IKBD_SC_4:
+        launch_demo((unsigned)(k->scancode - IKBD_SC_1));
         break;
-      }
       default:
         break;
     }
