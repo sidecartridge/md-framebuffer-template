@@ -51,6 +51,24 @@ BOOTSEL mode (or use the official tooling). Requires the ARM GNU Toolchain
 `atarist-toolkit-docker` (`stcmd`). A pure framebuffer app never touches
 the m68k side.
 
+### Jumping to the Booster configurator
+
+**Hold the cartridge SELECT button while powering on** (or while resetting
+the Pico) to jump straight into the **Booster** app — the SidecarTridge
+configurator menu — *before* this app runs. `main.c` reads SELECT at boot
+and, if it's held, calls `reset_jump_to_booster()` immediately:
+
+```c
+select_configure();
+if (select_detectPush()) {
+    reset_jump_to_booster();   // never returns
+}
+```
+
+This is the recovery / reconfiguration escape hatch: it works even if the
+app's saved config is wrong or the app misbehaves. Power on with SELECT
+released to run the app normally.
+
 ---
 
 ## 2. Starting fresh — strip the demos
