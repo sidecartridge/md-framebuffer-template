@@ -32,8 +32,17 @@ def binary_to_c_array(input_source, output_file, array_name, endian_format="litt
     if len(trimmed_data) % 2 != 0:
         raise ValueError("The binary file size (after trimming zeros) should be an even number of bytes for word processing.")
 
-    # Prepare the output content
-    content = f"const uint16_t {array_name}[] = {{\n"
+    # Prepare the output content. The array MUST be 4-byte aligned: the
+    # RP2040 boot path copies it into ROM_IN_RAM with the XIP stream DMA
+    # (COPY_FIRMWARE_TO_RAM_DMA in memfunc.h), and the XIP STREAM_ADDR
+    # register silently truncates the source to a 32-bit word boundary.
+    # A uint16_t array is only 2-byte aligned, so a 2-mod-4 linker
+    # placement makes the stream start 2 bytes early -- the whole
+    # cartridge image lands in RAM shifted by 2 bytes and the m68k
+    # crashes (bombs / black screen / boot-to-desktop, varying per build
+    # because it depends purely on linker layout). aligned(4) makes the
+    # truncation a no-op.
+    content = f"const uint16_t __attribute__((aligned(4))) {array_name}[] = {{\n"
 
     # Convert trimmed data to comma-separated hex values with MAX_WORDS_PER_LINE words per line
     for i in range(offset, len(trimmed_data) - offset, 2 * MAX_WORDS_PER_LINE):
