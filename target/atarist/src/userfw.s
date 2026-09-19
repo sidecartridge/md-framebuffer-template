@@ -64,7 +64,7 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 ; band colours above (black/white/green) at vsync / blit-running /
 ; blit-done. Useful for timing measurement on a CRT but flickers
 ; any visible content drawn in palette idx 0 (incl. the cart-side
-; palette publish below) -- demos (Epic 5) turn this off. Set to
+; palette publish below) -- keep it 0 for the demos. Set to
 ; 1 when measuring.
 FBDRV_DEBUG_MARKS     equ 0
 
@@ -206,12 +206,12 @@ FB_FRAME_COUNTER      equ $00FA400C
 
 ; RP→m68k command sentinel at $FA4000. The RP IKBD demux writes
 ; CMD_BOOT_GEM here when it decodes an ESC keypress; userfw's main
-; loop polls and exits back to GEM on match (Story 3.5). Must agree
+; loop polls and exits back to GEM on match. Must agree
 ; with main.s's CMD_MAGIC_SENTINEL_ADDR / CMD_BOOT_GEM equs.
 CMD_MAGIC_SENTINEL    equ $00FA4000
 CMD_BOOT_GEM          equ 2
 
-; 16-entry ST palette slot (Epic 5). 32 bytes of palette words
+; 16-entry ST palette slot. 32 bytes of palette words
 ; published by the RP; .vbl_loop applies them to PALETTE_BASE each
 ; frame via a MOVEM-load + MOVEM-store. Mirrors main.s PALETTE_ADDR.
 PALETTE_ADDR          equ $00FA4040
@@ -256,7 +256,7 @@ AUDIO_BUFFER_END      equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)
 FB_COPY_LINES         equ 200         ; M68k copies all 200 lines (32000 bytes = 666 chunks * 48 B + 32-byte tail). Full screen blitted.
 FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
 
-; --- IKBD ownership (Epic 3 Story 3.1) -----------------------------
+; --- IKBD ownership ------------------------------------------------
 
 ; Keyboard ACIA at $FFFFFC00/02. MIDI ACIA at $FFFFFC04/06 is not
 ; touched. Status bit 0 = RX-data-ready; bit 1 = TX-empty.
@@ -298,14 +298,14 @@ VEC_ACIA              equ $118
 VEC_TIMERB            equ $120
 VEC_TIMERA            equ $134
 
-; IKBD cart-bus emit window (Epic 3 W1, ROM3). The inline IKBD poll
+; IKBD cart-bus emit window (ROM3). The inline IKBD poll
 ; in FBDRV_INLINE reads (IKBD_WINDOW_BASE + byte).b to forward `byte`
 ; to RP; the RP side filters commemul ring samples whose low 16 bits
 ; fall in [$8200, $8300) and extracts the IKBD byte from the low 8
 ; bits.
 IKBD_WINDOW_BASE      equ $FB8200
 
-; VBL frame-sync ack (Epic 5). After each blit completes (.after_copy)
+; VBL frame-sync ack. After each blit completes (.after_copy)
 ; the m68k does a single dummy cart-bus read at VBLSYNC_ADDR to tell
 ; the RP "the blit is done, the cart framebuffer is free to overwrite".
 ; The m68k cannot WRITE the shared region (it's ROM from the m68k
@@ -353,7 +353,7 @@ userfw:
     lea     userfw_vbl(pc), a0
     move.l  a0, VBL_VECTOR.w
 
-    ; --- IKBD ownership setup (Epic 3 Story 3.1) ------------------
+    ; --- IKBD ownership setup ------------------------------------
     ;
     ; A5 = save area pointer (physbase - 32). Used at boot to save
     ; the 6 IRQ vectors + MFP IER/IMR; ESC exit recomputes A5 from
@@ -510,7 +510,7 @@ userfw:
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
     endc
 
-    ; Publish RP-supplied palette to the shifter (Epic 5). 16 words
+    ; Publish RP-supplied palette to the shifter. 16 words
     ; from PALETTE_ADDR -> $FFFF8240..$FFFF825E via two MOVEMs.
     ; Cost: 76 (load) + 72 (store) + 16 (lea) = ~164 cyc / VBL =
     ; ~20 us. Apps that don't want RP-driven palette can leave the
@@ -568,7 +568,7 @@ userfw:
     eor.l   #UFW_SCREEN_XOR, d0
     move.l  d0, UFW_SCREEN_PAGE
 
-    ; Frame-sync ack (Epic 5): one cart-bus read tells the RP the blit
+    ; Frame-sync ack: one cart-bus read tells the RP the blit
     ; is finished and the cart FB is free to overwrite. Emitted every
     ; VBL (the FB is free here -- blit done, page flipped). The RP's
     ; commemul ring captures the read; fb_publish() on the RP blocks
@@ -576,7 +576,7 @@ userfw:
     tst.b   VBLSYNC_ADDR
 
 .input_check:
-    ; ESC detection (Story 3.5): the RP-side IKBD demux writes
+    ; ESC detection: the RP-side IKBD demux writes
     ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL on ESC press. Any other
     ; sentinel value (NOP, future commands) leaves the loop running.
     move.l  CMD_MAGIC_SENTINEL, d0

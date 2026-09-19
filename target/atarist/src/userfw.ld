@@ -18,7 +18,7 @@
  * fbdrv note: previously there was a third section .text_fbdrv at
  * offset 0x2000 holding a standalone MOVEM-loop copy routine that
  * .copy_st jsr'd into. The jsr was isolated as the source of a
- * cart-bus instability (Epic 4 Story 4.7 follow-up), so the routine
+ * cart-bus instability, so the routine
  * was inlined as a macro (FBDRV_INLINE) in userfw.s and the section
  * was removed. userfw's budget grew from 6 KB to 14 KB to absorb it.
  *

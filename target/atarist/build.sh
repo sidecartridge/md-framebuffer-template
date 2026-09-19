@@ -16,9 +16,8 @@ build_type=$2
 target_firmware="target_firmware.h"
 
 # (fbdrv.s used to be regenerated here by gen_fbdrv.py before the
-# m68k make. Epic 4 Story 4.7 dropped that step -- src/fbdrv.s is now
-# a hand-written, version-controlled file. The Makefile assembles it
-# alongside main.s and userfw.s like any other source.)
+# m68k make. That step is gone: the cart->ST copy is now the
+# FBDRV_INLINE macro inside userfw.s.)
 
 # ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
 # STCMD_NO_TTY=1 keeps docker working when invoked from non-TTY contexts
@@ -35,8 +34,8 @@ fi
 # Cartridge code budget: header + code + fbdrv must fit in 16 KB
 # (CART_CARTRIDGE_CODE_SIZE in rp/src/include/cart_shared.h, mirrored as
 # CARTRIDGE_CODE_SIZE in target/atarist/src/main.s). Bumped from 8 KB to
-# 16 KB in Story 1.2.6 to accommodate the unrolled MOVEM block at
-# offset $2000. Enforce here so the build fails fast instead of silently
+# 16 KB to make room for the unrolled MOVEM blit (now the FBDRV_INLINE
+# macro in userfw.s). Enforce here so the build fails fast instead of silently
 # overlapping the shared block.
 # stat directly on the host to avoid the stcmd banner contaminating stdout.
 boot_bin="$working_folder/dist/BOOT.BIN"

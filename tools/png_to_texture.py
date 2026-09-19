@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Convert a PNG logo into a power-of-two, byte-per-pixel texture header
-for the framebuffer rotozoom (Epic 6 cool menu).
+for the framebuffer rotozoom (the animated boot menu).
 
 The dark silhouette of the logo maps to a small luminance ramp
 [--lo, --lo+--shades), with the darkest (core) pixels at the brightest

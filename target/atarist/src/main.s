@@ -28,11 +28,11 @@ ROM4_ADDR			equ $FA0000
 ; Shared 64 KB region layout (must match rp/src/include/cart_shared.h).
 ;
 ;   $FA0000  CARTRIDGE			m68k header + code (max 16 KB)
-;					Includes the unrolled MOVEM block
-;					(fbdrv.s) at offset $2000.
+;					Includes userfw's inline MOVEM blit
+;					(FBDRV_INLINE).
 ;   $FA4000  CMD_MAGIC_SENTINEL_ADDR	4 B
-;   $FA4004  RANDOM_TOKEN_ADDR		4 B  (legacy / unused since Epic 3.8)
-;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since Epic 3.8)
+;   $FA4004  RANDOM_TOKEN_ADDR		4 B  (legacy / unused since the handshake was removed)
+;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since the handshake was removed)
 ;   $FA400C  FB_FRAME_COUNTER_ADDR	4 B
 ;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots, app-free).
 ;   $FA4100  APP_FREE_ADDR	      ~16.5 KB free arena, ends at FRAMEBUFFER
@@ -43,7 +43,7 @@ CARTRIDGE_CODE_SIZE	equ $4000	; 16 KB max for cartridge header + code + fbdrv
 SHARED_BLOCK_ADDR	equ (ROM4_ADDR + CARTRIDGE_CODE_SIZE)		; $FA4000
 CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA4000
 
-; 16-entry ST palette slot (Epic 5). 32 bytes of 16-bit palette
+; 16-entry ST palette slot. 32 bytes of 16-bit palette
 ; words published by the RP, applied to $FFFF8240..$FFFF825E by
 ; userfw_vbl_loop. Slot 12 of SHARED_VARIABLES (offset +$30).
 PALETTE_ADDR		equ (SHARED_BLOCK_ADDR + $40)			; $FA4040
@@ -63,11 +63,10 @@ AUDIO_BUFFER_END	equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)	; $FA4500
 APP_FREE_ADDR		equ AUDIO_BUFFER_END				; $FA4500
 FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
 
-; Transitional: the pre-Story-1.2 boot UI fills only the first 8000 bytes
-; of the framebuffer with a 1bpp u8g2 image, and the .print_loop_low
-; copy loop below expands that mono buffer to fit the 32000-byte ST
-; screen. Story 1.2.6+ replaces that loop with the native 4bpp fbdrv
-; copy and this constant goes away.
+; Left over from the removed mono boot UI, which filled the first 8000
+; bytes of the framebuffer with a 1bpp u8g2 image that the
+; .print_loop_low copy loop expanded to the 32000-byte ST screen. The
+; native 4bpp copy replaced it; nothing references this constant.
 MONO_UI_BUFFER_SIZE	equ 8000
 
 ; User firmware entry point. The cartridge image places userfw.s at
@@ -270,15 +269,14 @@ start_rom_code:
 	cmp.w #2, d0
 	beq .highres_unsupported
 
-; Story 1.2: the old mono boot-UI loop (.print_loop_low, which read the
+; The old mono boot-UI loop (.print_loop_low, which read the
 ; first 8 KB of the cartridge framebuffer and expanded it 1bpp -> 4bpp
 ; into the ST screen) is gone. With u8g2 removed there's nothing left
 ; to render in mono, and the expander mis-mapped any 4bpp content
 ; written to the cart FB (40 cart bytes -> 1 ST row, so rows 0..4 of
 ; a 4bpp image landed on ST rows 0, 4, 8, 12, 16). Boot straight into
-; the user firmware: userfw owns the VBL loop and runs fbdrv (or, on
-; STE-class machines, an inline blitter copy) which copies the cart FB
-; to ST screen verbatim with the correct 4bpp planar interpretation.
+; the user firmware: userfw owns the VBL loop and runs the FBDRV_INLINE
+; copy, which copies the cart FB to ST screen verbatim with the correct 4bpp planar interpretation.
 	jmp USERFW
 
 .highres_unsupported:
