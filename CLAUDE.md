@@ -44,7 +44,7 @@ Network plumbing (WiFi / lwIP / mbedTLS / httpc) was deliberately stripped — a
 Top-level build is driven by `build.sh` in the repo root:
 
 ```bash
-# <board_type> = pico | pico_w
+# <board_type> = pico_w
 # <build_type> = debug | release   (note: always compiled as MinSizeRel — see below)
 # <app_uuid_key> = UUID4 identifying this app, must match desc/app.json
 ./build.sh pico_w release 44444444-4444-4444-8444-444444444444

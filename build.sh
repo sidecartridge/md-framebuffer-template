@@ -13,7 +13,7 @@ SCRIPT_DIR=$(dirname "$(realpath "$0")")
 # Ensure all required arguments are provided
 if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ]; then
     echo "Usage: $0 <board_type> <build_type> <app_uuid_key>"
-    echo "Example: $0 pico|pico_w debug|release 123e4567-e89b-12d3-a456-426614174000"
+    echo "Example: $0 pico_w debug|release 123e4567-e89b-12d3-a456-426614174000"
     exit 1
 fi
 
