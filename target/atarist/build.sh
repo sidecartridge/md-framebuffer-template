@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Fail fast. Without this a failed step was stepped over and the RP build went
+# on to embed the committed target_firmware.h, which no longer matches these
+# sources. `-u` is not set: the argument checks test unset arguments.
+set -Eeo pipefail
+trap 'echo "ERROR: ${BASH_SOURCE[0]}: failed at line ${LINENO}" >&2' ERR
+
 # Ensure an argument is provided
 if [ -z "$1" ]; then
     echo "Usage: $0 <working_folder> all|release"
@@ -24,8 +30,8 @@ target_firmware="target_firmware.h"
 # (CI, sub-shells, build wrappers). Without it stcmd's `-it` flag aborts
 # with "the input device is not a TTY" and the build silently keeps
 # whatever BOOT.BIN was previously generated.
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd make $build_type
-make_status=$?
+make_status=0
+STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd make $build_type || make_status=$?
 if [ "$make_status" -ne 0 ]; then
     echo "ERROR: m68k make failed (status $make_status)"
     exit $make_status
@@ -84,9 +90,7 @@ if [ "$filesize" -gt "$targetsize" ]; then
 fi
 
 # Resize the file to 64Kbytes
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd truncate -s $targetsize $filename
-
-if [ $? -ne 0 ]; then
+if ! STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd truncate -s $targetsize $filename; then
     echo "Failed to resize the file."
     exit 3
 fi
@@ -94,7 +98,15 @@ fi
 echo "File has been resized."
 
 echo "Creating the firmware.h file."
-python firmware.py --input=dist/FIRMWARE.IMG --output=$target_firmware --array_name=target_firmware
+# Remove any header left by an earlier run, so the check below proves that
+# this run generated it. python3 first: stock macOS has no `python`.
+rm -f "$target_firmware"
+python_bin=$(command -v python3 || command -v python)
+"$python_bin" firmware.py --input=dist/FIRMWARE.IMG --output=$target_firmware --array_name=target_firmware
+if [ ! -s "$target_firmware" ]; then
+    echo "ERROR: firmware.py did not produce $target_firmware"
+    exit 6
+fi
 
 cp $target_firmware ../../rp/src/include/$target_firmware
 echo "Copied $target_firmware to rp/src/include/$target_firmware"

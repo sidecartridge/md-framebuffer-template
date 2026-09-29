@@ -16,9 +16,22 @@
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 
-#define COPY_FIRMWARE_TO_RAM(emulROM, emulROM_length)  \
-  do {                                                 \
-    COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length); \
+// Copy a cartridge image into the ROM_IN_RAM window. emulROM_length is in
+// 16-bit words. The window is cleared first, so nothing from a previous run
+// (another app, a jump from Booster, a crash reboot) survives past the end of
+// the image. The DMA path reads through the XIP stream, which can only start
+// at a 4-byte aligned address; any other source is copied word by word.
+#define COPY_FIRMWARE_TO_RAM(emulROM, emulROM_length)              \
+  do {                                                             \
+    ERASE_FIRMWARE_IN_RAM();                                       \
+    if ((((uintptr_t)(emulROM)) & 3u) == 0u) {                     \
+      COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length);           \
+    } else {                                                       \
+      DPRINTF("Image at 0x%08lX is not 4-byte aligned; copying "   \
+              "word by word\n",                                    \
+              (unsigned long)(uintptr_t)(emulROM));                \
+      COPY_FIRMWARE_TO_RAM_MEMCPY(emulROM, emulROM_length);        \
+    }                                                              \
   } while (0)
 
 #define ERASE_FIRMWARE_IN_RAM()                                \
@@ -28,10 +41,12 @@
     DPRINTF("RAM for the firmware zeroed.\n");                 \
   } while (0)
 
-#define COPY_FIRMWARE_TO_RAM_MEMCPY(emulROM, emulROM_length) \
-  do {                                                       \
-    memcpy(&__rom_in_ram_start__, emulROM, emulROM_length);  \
-    DPRINTF("Emulation firmware copied to RAM.\n");          \
+// emulROM_length is in 16-bit words, like COPY_FIRMWARE_TO_RAM.
+#define COPY_FIRMWARE_TO_RAM_MEMCPY(emulROM, emulROM_length)       \
+  do {                                                             \
+    memcpy((void *)&__rom_in_ram_start__, (const void *)(emulROM), \
+           (size_t)(emulROM_length) * sizeof(uint16_t));           \
+    DPRINTF("Emulation firmware copied to RAM.\n");                \
   } while (0)
 
 #define COPY_FIRMWARE_TO_RAM_DMA(emulROM, emulROM_length)                     \
@@ -64,6 +79,11 @@
     );                                                                        \
     dma_channel_wait_for_finish_blocking(dma_chan);                           \
     dma_channel_unclaim((uint)dma_chan);                                      \
+    /* The stream moves 32-bit words: copy an odd trailing 16-bit word. */   \
+    if ((emulROM_length) & 1u) {                                              \
+      ((uint16_t *)&__rom_in_ram_start__)[(emulROM_length) - 1u] =            \
+          (emulROM)[(emulROM_length) - 1u];                                   \
+    }                                                                         \
   } while (0)
 
 #define CHANGE_ENDIANESS_BLOCK16(dest_ptr_word, size_in_bytes) \

@@ -320,6 +320,22 @@ rom_function:
 ; Don't forget to include the macros for the shared functions at the top of file
     include "inc/sidecart_functions.s"
 
+; The NOP tail. The senders' wait loop must never be the last code of a module:
+; firmware.py strips trailing zero bytes from the image, pre_auto relocates
+; start_rom_code..end_rom_code in whole longwords, and both the write sender
+; (its code size includes 4 bytes past the loop) and the 68000's prefetch read
+; past the loop's last word. Every module that includes sidecart_functions.s
+; ends like this.
+	even
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+main_end:
 
 end_rom_code:
 end_pre_auto:

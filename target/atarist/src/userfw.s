@@ -696,3 +696,19 @@ userfw_timerb_audio:
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:
     rte
+
+; The NOP tail. This module is the last in the cartridge image, and
+; firmware.py strips trailing zero bytes from it: the last word must be
+; harmless to drop or to prefetch past. An app that includes
+; inc/sidecart_functions.s here must keep the tail after it, so the
+; senders' wait loop is never the image's last code (see main.s).
+    even
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
+userfw_end:

@@ -18,6 +18,7 @@
 #include "emul.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include "aconfig.h"
 #include "audio.h"
@@ -48,12 +49,31 @@ void emul_start() {
   // bytes up to the last non-zero in BOOT.BIN (padded to 64 KB), so
   // without an explicit erase the framebuffer region at $FA8300+ would
   // be whatever was sitting in RAM and the m68k blit would copy that
-  // noise to the ST screen. Zero the whole 64 KB shared region first
-  // so every byte the m68k can see is deterministic.
-  ERASE_FIRMWARE_IN_RAM();
-
-  // Copy the cartridge image into the now-zeroed region.
+  // noise to the ST screen. COPY_FIRMWARE_TO_RAM zeroes the whole 64 KB
+  // shared region first, so every byte the m68k can see is deterministic,
+  // then copies the cartridge image into it.
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
+#if defined(_DEBUG) && (_DEBUG != 0)
+  // The ST must see exactly the generated image.
+  if (memcmp((const void *)&__rom_in_ram_start__, target_firmware,
+             (size_t)target_firmware_length * sizeof(uint16_t)) != 0) {
+    DPRINTF("ERROR: cartridge image in RAM does not match target_firmware\n");
+  } else {
+    DPRINTF("Cartridge image in RAM verified (%u words)\n",
+            (unsigned)target_firmware_length);
+  }
+  // Nothing from a previous run may survive past the end of the image.
+  {
+    const uint8_t *window = (const uint8_t *)&__rom_in_ram_start__;
+    size_t used = (size_t)target_firmware_length * sizeof(uint16_t);
+    size_t leftovers = 0;
+    for (size_t i = used; i < ROM_SIZE_BYTES * ROM_BANKS; i++) {
+      if (window[i] != 0) leftovers++;
+    }
+    DPRINTF("Cartridge window after the image: %u non-zero bytes\n",
+            (unsigned)leftovers);
+  }
+#endif
 
   // Reset the IKBD ring (init order before commemul_init is fine since
   // the producer side runs from the main loop, not from an IRQ).

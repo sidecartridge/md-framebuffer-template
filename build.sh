@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Fail fast. Without this a failed step was stepped over: the RP build went on
+# with the committed target_firmware.h, or a UF2 an earlier run had left in
+# rp/dist was copied, and the script still exited 0 with a JSON announcing the
+# new version. `-u` is not set: the argument checks below test unset arguments.
+set -Eeo pipefail
+trap 'echo "ERROR: ${BASH_SOURCE[0]}: failed at line ${LINENO}" >&2' ERR
+
 # Get the absolute path of the current script
 SCRIPT_DIR=$(dirname "$(realpath "$0")") 
 
@@ -64,8 +71,13 @@ if [ ! -f dist/rp.uf2 ]; then
     exit 1
 fi
 
-# Calculate the md5sum of the generated rp.uf2 file
-md5sum dist/rp.uf2 > dist/rp.uf2.md5sum
+# Calculate the md5sum of the generated rp.uf2 file. Stock macOS has md5, not
+# md5sum.
+if command -v md5sum >/dev/null 2>&1; then
+    md5sum dist/rp.uf2 > dist/rp.uf2.md5sum
+else
+    echo "$(md5 -q dist/rp.uf2)  dist/rp.uf2" > dist/rp.uf2.md5sum
+fi
 
 # Show the md5sum of the generated rp.uf2 file
 echo "md5sum of the generated rp.uf2 file:"
