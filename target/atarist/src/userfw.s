@@ -9,10 +9,10 @@
 ;      main loop by clearing a flag in ST RAM. We DON'T use XBIOS
 ;      Vsync (trap #14, #37) -- that trips through TOS's GEMDOS-aware
 ;      dispatch and adds latency / jitter.
-;   2. Read the low word of FB_FRAME_COUNTER ($FA400C), which the RP
+;   2. Read the low word of FB_FRAME_COUNTER_ADDR ($FA400C), which the RP
 ;      bumps as the last write of every publish. If it has not moved
 ;      since the last blit (UFW_LAST_FRAME), there is nothing new: skip
-;      the blit, the flip and the ack (see FB_FRAME_COUNTER).
+;      the blit, the flip and the ack (see FB_FRAME_COUNTER_ADDR).
 ;   3. Copy the 32 KB cart framebuffer ($FA8300) into the hidden
 ;      ST screen page selected by A4. The copy is a pure 68000 CPU
 ;      MOVEM burst expanded inline via FBDRV_INLINE -- same code on
@@ -37,6 +37,13 @@
 ; overhead) and runs the IKBD demux from its main loop.
 ;
 ; --- Constants ----------------------------------------------------
+
+; The cartridge window, the command values and the ROM3 signalling windows
+; (FB_FRAME_COUNTER_ADDR, CMD_MAGIC_SENTINEL_ADDR, PALETTE_ADDR,
+; AUDIO_BUFFER_ADDR, FRAMEBUFFER_ADDR, FB_COPY_LINES, IKBD_WINDOW_BASE,
+; VBLSYNC_ADDR...), shared with main.s and checked against the RP's
+; cart_shared.h.
+	include inc/sidecart_layout.s
 
 ; Atari ST shifter video base registers (68000-compatible, present
 ; on every ST/STE/MegaSTE/TT/Falcon). Only HIGH+MID are written;
@@ -78,8 +85,8 @@ UFW_RESET_STUB        equ $00077F00          ; up to $77FDF
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
-; Low word of FB_FRAME_COUNTER at the last blit: .vbl_loop blits only when
-; the counter has moved on since (see FB_FRAME_COUNTER).
+; Low word of FB_FRAME_COUNTER_ADDR at the last blit: .vbl_loop blits only when
+; the counter has moved on since (see FB_FRAME_COUNTER_ADDR).
 UFW_LAST_FRAME        equ $00077FF0          ; word
 ; .vbl_loop arms this to -1 then `stop`s; userfw_vbl clears it. The
 ; m68k re-stops on any non-VBL IRQ (Timer-B etc.) and only exits the
@@ -148,7 +155,7 @@ FBDRV_TAIL_DISP       equ FBDRV_MAIN_BYTES                        ; tail goes at
 ; + 6 B setup = ~5 KB inline, plus the small d16(a5) tail MOVEM at
 ; the end.
 FBDRV_INLINE          macro
-    movea.l #UFW_FB_SRC, a6
+    movea.l #FRAMEBUFFER_ADDR, a6
     rept    FBDRV_MAIN_ITERS
     movem.l (a6)+, d0-d7/a1-a4
     movem.l d0-d7/a1-a4, -(a5)
@@ -157,7 +164,7 @@ FBDRV_INLINE          macro
     ; Tail: copy the last FBDRV_TAIL_BYTES bytes of the blitted
     ; region that the chunked main loop can't reach (FB_COPY_LINES *
     ; 160 isn't a multiple of FBDRV_ITER_BYTES=48). A6 is at
-    ; UFW_FB_SRC + FBDRV_MAIN_BYTES after the REPT; A5 is back at
+    ; FRAMEBUFFER_ADDR + FBDRV_MAIN_BYTES after the REPT; A5 is back at
     ; page_start. The RP-side fb_chunky_to_planar leaves these tail
     ; bytes in NATURAL (non-reversed) order in cart-FB, so this is a
     ; straight forward-direction copy via d16(a5).
@@ -183,7 +190,7 @@ FBDRV_INLINE          macro
 ; framebuffer template because we own the screen until ESC exit.
 VBL_VECTOR            equ $70
 
-; FB frame counter (cart shared region, $FA400C). The RP publishes a
+; FB frame counter (FB_FRAME_COUNTER_ADDR, $FA400C). The RP publishes a
 ; whole frame into the cart framebuffer and then bumps this counter as
 ; its LAST write. .vbl_loop blits only when the counter's low word has
 ; changed since the last blit (UFW_LAST_FRAME), and acknowledges only
@@ -193,33 +200,25 @@ VBL_VECTOR            equ $70
 ; counter means the frame is complete. A slow app gets fewer frames,
 ; never a torn one. The low word is read with one move.w: a longword is
 ; two bus reads with its halves swapped and could mix old and new.
-FB_FRAME_COUNTER      equ $00FA400C
 
-; RP→m68k command sentinel at $FA4000. The RP IKBD demux writes
-; CMD_BOOT_GEM here when it decodes an ESC keypress; userfw's main
-; loop polls and exits back to GEM on match. CMD_RESET comes before the
-; RP reboots into Booster: userfw then cold-resets the ST (.cold_reset).
-; Must agree with main.s's CMD_MAGIC_SENTINEL_ADDR / CMD_* equs.
-CMD_MAGIC_SENTINEL    equ $00FA4000
-CMD_RESET             equ 1
-CMD_BOOT_GEM          equ 2
+; RP→m68k command sentinel (CMD_MAGIC_SENTINEL_ADDR, $FA4000). The RP
+; IKBD demux writes CMD_BOOT_GEM there when it decodes an ESC keypress;
+; userfw's main loop polls and exits back to GEM on match. CMD_RESET comes
+; before the RP reboots into Booster: userfw then cold-resets the ST
+; (.cold_reset).
 ; Delay before the cold reset, so TOS scans the cartridge only once Booster
 ; serves it. Mirrors PRE_RESET_WAIT in main.s, the delay Booster uses too.
 UFW_PRE_RESET_WAIT    equ $FFFFF
 
-; 16-entry ST palette slot. 32 bytes of palette words
-; published by the RP; .vbl_loop applies them to PALETTE_BASE each
-; frame via a MOVEM-load + MOVEM-store. Mirrors main.s PALETTE_ADDR.
-PALETTE_ADDR          equ $00FA4040
-PALETTE_SIZE          equ 32
+; The 16-entry ST palette at PALETTE_ADDR, published by the RP:
+; .vbl_loop applies it to PALETTE_BASE each frame via a MOVEM-load +
+; MOVEM-store.
 
 ; Screen pages live just below TOS RAM top (TT-style 256 KB ST RAM
 ; assumption -- screens land at $70000/$78000, matching md-sprites-demo).
 UFW_SCREEN_A          equ $00070000
 UFW_SCREEN_B          equ $00078000
 UFW_SCREEN_XOR        equ (UFW_SCREEN_A ^ UFW_SCREEN_B)
-
-UFW_FB_SRC            equ $00FA8300           ; FRAMEBUFFER_ADDR
 
 ; --- YM2149 sound chip (single-channel A 4-bit DAC) ----------------
 ;
@@ -237,21 +236,16 @@ YM_REG_CHB_VOL        equ 9                  ; channel B volume (low 4 bits)
 YM_MIXER_DAC_CHA      equ $FE                ; tone A enabled, all other tones/noise off, ports out
 YM_MIXER_DAC_AB       equ $FC                ; tones A AND B enabled, tone C off, all noise off, ports out (Ghostbusters dual-channel fake DAC)
 
-; Cart-shared audio sample buffer (mirrors AUDIO_BUFFER_ADDR /
-; AUDIO_BUFFER_SIZE in main.s and CART_AUDIO_BUFFER_OFFSET in
-; rp/src/include/cart_shared.h). (vA, vB) YM volume pairs, one pair
-; per Timer-B fire; the VBL handler points A0 back at the start every
+; The audio buffer at AUDIO_BUFFER_ADDR: (vA, vB) YM volume pairs, one
+; pair per Timer-B fire; the VBL handler points A0 back at the start every
 ; VBL, so a frame reads its first ~224 bytes. Filled by the RP.
-AUDIO_BUFFER_ADDR     equ $00FA4100
-AUDIO_BUFFER_SIZE     equ 1024
-AUDIO_BUFFER_END      equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)
 
-; Number of 320-px lines the cart->ST blit covers per frame. Full ST
-; low-res is 200; copying fewer leaves the bottom band of the
-; destination ST page untouched (useful for a status row or to bound
-; the blitter cost).
-FB_COPY_LINES         equ 200         ; M68k copies all 200 lines (32000 bytes = 666 chunks * 48 B + 32-byte tail). Full screen blitted.
-FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
+; FB_COPY_LINES (inc/sidecart_layout.s) is the number of 320-px lines the
+; cart->ST blit covers per frame. Full ST low-res is 200 (32000 bytes = 666
+; chunks * 48 B + a 32-byte tail); copying fewer leaves the bottom band of
+; the destination ST page untouched (useful for a status row or to bound
+; the blit's cost). The RP lays the framebuffer out for exactly this many
+; lines (CART_FB_BLIT_LINES).
 
 ; --- IKBD ownership ------------------------------------------------
 
@@ -337,7 +331,6 @@ VEC_TIMERA            equ $134
 ; to RP; the RP side filters commemul ring samples whose low 16 bits
 ; fall in [$8200, $8300) and extracts the IKBD byte from the low 8
 ; bits.
-IKBD_WINDOW_BASE      equ $FB8200
 
 ; The keyboard ACIA's receive interrupt reads every IKBD byte as it
 ; arrives (userfw_acia_irq). The 6850 holds one byte and the IKBD sends
@@ -349,7 +342,6 @@ IKBD_WINDOW_BASE      equ $FB8200
 ; The MIDI ACIA shares the GPIP4 line: its receive interrupt is turned
 ; off while userfw runs, or a MIDI byte nobody reads would hold the line
 ; down and stop the keyboard.
-IKBD_OVERRUN_ADDR     equ $FB8500
 ACIA_MIDI_CTRL        equ $FFFFFC04
 ACIA_KBD_CTRL_TOS     equ $96        ; RX interrupt on, 8N1, /64 (TOS's setting)
 ACIA_MIDI_CTRL_OFF    equ $15        ; RX interrupt off, 8N1, /16
@@ -364,7 +356,6 @@ MFP_GPIP4_BIT         equ 6          ; IERB / IMRB bit of the ACIA interrupt
 ; -- the same mechanism IKBD uses. Distinct high byte ($84) from the
 ; IKBD window ($82) so the RP can tell the two apart. The value read
 ; is irrelevant; only the address matters.
-VBLSYNC_ADDR          equ $FB8400
 
 ; Hello (rp/src/include/st_session.h): the ST and the RP reboot
 ; independently and the RP keeps its state across an ST reset, the command
@@ -373,9 +364,6 @@ VBLSYNC_ADDR          equ $FB8400
 ; ROM3 reads, the TOS version's two bytes then the machine; on the hello the
 ; RP writes CMD_NOP to the sentinel and starts its session over. Windows and
 ; the machine byte: see cart_shared.h and st_session.h.
-ST_HELLO_WINDOW       equ $FB8800     ; + machine: family in bits 7..4, model in 3..0
-ST_TOS_HI_WINDOW      equ $FB8900     ; + TOS version, high byte
-ST_TOS_LO_WINDOW      equ $FB8A00     ; + TOS version, low byte
 P_COOKIES             equ $5A0        ; _p_cookies: the cookie jar, 0 on TOS 1.0x
 RESET_VECTOR_HI       equ $4          ; high word of the reset PC: $00FC on a 192 KB TOS
 TOS_ROM_192K          equ $FC0000     ; TOS header (version word at +2), 192 KB TOS
@@ -470,7 +458,7 @@ userfw:
     movea.l UFW_PHYSBASE_SAVE, a5
     lea     -UFW_SAVE_SIZE(a5), a5
 
-    ; The command sentinel at CMD_MAGIC_SENTINEL is RP-owned (m68k
+    ; The command sentinel at CMD_MAGIC_SENTINEL_ADDR is RP-owned (m68k
     ; can't write to the cart shared region) and is zeroed by the
     ; RP's ERASE_FIRMWARE_IN_RAM at boot, so we don't need to clear
     ; it from here. It's already CMD_NOP=0 on first userfw entry.
@@ -623,8 +611,8 @@ userfw:
     move.l  #UFW_SCREEN_A, UFW_SCREEN_PAGE
 
     ; The frame now in the cart framebuffer counts as seen: the first blit
-    ; waits for the RP's next publish (see FB_FRAME_COUNTER).
-    move.w  FB_FRAME_COUNTER, UFW_LAST_FRAME
+    ; waits for the RP's next publish (see FB_FRAME_COUNTER_ADDR).
+    move.w  FB_FRAME_COUNTER_ADDR, UFW_LAST_FRAME
 
     ; Shifter base HIGH byte ($07) is the same for both screen pages
     ; ($70000 and $78000), so we write it ONCE here and only update
@@ -669,8 +657,8 @@ userfw:
     movem.l d0-d7, PALETTE_BASE.w
 
     ; Blit only a frame the RP has finished publishing, and only once
-    ; (see FB_FRAME_COUNTER). Nothing new: no blit, no flip, no ack.
-    move.w  FB_FRAME_COUNTER, d0
+    ; (see FB_FRAME_COUNTER_ADDR). Nothing new: no blit, no flip, no ack.
+    move.w  FB_FRAME_COUNTER_ADDR, d0
     cmp.w   UFW_LAST_FRAME, d0
     beq     .input_check
     move.w  d0, UFW_LAST_FRAME
@@ -731,10 +719,10 @@ userfw:
 
 .input_check:
     ; ESC detection: the RP-side IKBD demux writes
-    ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL on ESC press. CMD_RESET:
+    ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL_ADDR on ESC press. CMD_RESET:
     ; the RP is about to reboot into Booster. Any other
     ; sentinel value (NOP, future commands) leaves the loop running.
-    move.l  CMD_MAGIC_SENTINEL, d0
+    move.l  CMD_MAGIC_SENTINEL_ADDR, d0
     cmp.l   #CMD_RESET, d0
     beq     .cold_reset
     cmp.l   #CMD_BOOT_GEM, d0

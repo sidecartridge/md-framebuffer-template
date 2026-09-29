@@ -450,6 +450,20 @@ optimization toolbox: per-file `#pragma GCC optimize("O3")`,
 loops, fixed-point + sin/cos LUTs, the SIO interpolator for texture
 addressing, and a dual-core band split via `fb_core1_dispatch()`.
 
+## Testing and debugging
+
+- **Host tests**: `make -C tests/host test` runs the template's pure logic on your computer in a
+  second or two: the blits' clipping, the framebuffer layout end to end (what you draw is what
+  the ST shows), the ST and RP copies of every shared constant, and the audio converter. CI runs
+  them on every pull request. Add yours as `tests/host/test_*.c` (its first line names the
+  firmware sources it compiles) or `test_*.py`.
+- **A constant both sides share** (a new block in the cartridge window, a new ROM3 signal) goes
+  in `target/atarist/src/inc/sidecart_layout.s` and `rp/src/include/cart_shared.h`, with a row in
+  `tests/host/test_layout.py`.
+- **With a Raspberry Pi Debug Probe** on the RP's SWD and debug UART, `tools/dev/` builds, flashes
+  and verifies from the host, captures the console, reads counters while the app runs, grabs the
+  screen as a PNG and types on the ST's keyboard: see `tools/dev/README.md`.
+
 ## More docs
 
 - `CLAUDE.md` — architecture deep-dive (the framebuffer pipeline, shared

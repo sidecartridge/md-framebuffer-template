@@ -26,7 +26,7 @@
 #include "st_session.h"
 
 /* Blit-done ack. The m68k blits only a frame it has not blitted yet (the
- * frame counter's low word changed; see FB_FRAME_COUNTER in userfw.s) and
+ * frame counter's low word changed; see FB_FRAME_COUNTER_ADDR in userfw.s) and
  * then does a cart-bus read at $FB8400 (VBLSYNC_ADDR); the commemul ring
  * captures it with low-16 = 0x84xx. fb_pump_rom3 routes ROM3 samples to
  * the IKBD demux, the ST's hello and this detector. fb_publish() waits for
