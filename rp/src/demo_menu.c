@@ -318,6 +318,17 @@ void demo_dispatcher_init(void) {
   DPRINTF("demo_dispatcher_init: MENU state, ESC owned by dispatcher\n");
 }
 
+/* A new ST session (st_session.h): back to the menu, whatever the last one
+ * left -- a demo running, or the dispatcher waiting for the exit to GEM. */
+void demo_dispatcher_restart(void) {
+  if (s_state == DEMO_STATE_ACTIVE && s_active && s_active->teardown) {
+    s_active->teardown();
+  }
+  s_active = NULL;
+  s_state = DEMO_STATE_MENU;
+  DPRINTF("dispatcher: new ST session -> menu\n");
+}
+
 /* Launch the demo at menu index `idx` (shared by the number keys and
  * Return on the highlighted item). */
 static void launch_demo(unsigned idx) {

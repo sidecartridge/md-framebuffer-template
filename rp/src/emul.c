@@ -35,6 +35,7 @@
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
+#include "st_session.h"
 #include "target_firmware.h"
 
 /* No sleep -- tight loop. The dirty-frame handshake means
@@ -168,6 +169,11 @@ void emul_start() {
   while (true) {
     fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
     ikbd_pump();
+
+    /* The ST rebooted: start its session over (see st_session.h). */
+    if (st_session_consume_boot()) {
+      demo_dispatcher_restart();
+    }
 
     ikbd_key_event_t k;
     while (ikbd_pop_key(&k)) {

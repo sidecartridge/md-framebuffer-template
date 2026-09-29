@@ -64,6 +64,7 @@ extern const demo_module_t demo_cojorotozoom;
  * handle_key() for every popped IKBD event and render_frame() once
  * per main-loop iteration. */
 void demo_dispatcher_init(void);
+void demo_dispatcher_restart(void);
 void demo_dispatcher_handle_key(const ikbd_key_event_t *k);
 void demo_dispatcher_render_frame(void);
 

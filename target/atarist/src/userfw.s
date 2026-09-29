@@ -352,6 +352,21 @@ IKBD_WINDOW_BASE      equ $FB8200
 ; is irrelevant; only the address matters.
 VBLSYNC_ADDR          equ $FB8400
 
+; Hello (rp/src/include/st_session.h): the ST and the RP reboot
+; independently and the RP keeps its state across an ST reset, the command
+; sentinel included, so after an exit to GEM the next boot would read
+; CMD_BOOT_GEM and leave at once. userfw says hello at every boot with three
+; ROM3 reads, the TOS version's two bytes then the machine; on the hello the
+; RP writes CMD_NOP to the sentinel and starts its session over. Windows and
+; the machine byte: see cart_shared.h and st_session.h.
+ST_HELLO_WINDOW       equ $FB8800     ; + machine: family in bits 7..4, model in 3..0
+ST_TOS_HI_WINDOW      equ $FB8900     ; + TOS version, high byte
+ST_TOS_LO_WINDOW      equ $FB8A00     ; + TOS version, low byte
+P_COOKIES             equ $5A0        ; _p_cookies: the cookie jar, 0 on TOS 1.0x
+RESET_VECTOR_HI       equ $4          ; high word of the reset PC: $00FC on a 192 KB TOS
+TOS_ROM_192K          equ $FC0000     ; TOS header (version word at +2), 192 KB TOS
+TOS_ROM_256K          equ $E00000     ; TOS header, 256 KB TOS and later
+
 ; Save area for vectors + MFP regs we'll restore on ESC exit. Lives
 ; in the top 32 bytes of the 4 KB copied-code area below ST screen
 ; memory (pre_auto in main.s relocates start_rom_code..end_rom_code
@@ -377,6 +392,48 @@ UFW_SAVE_SIZE         equ 32
 
 userfw:
     ; --- Boot setup (runs once) ---
+
+    ; Hello (see ST_HELLO_WINDOW). The TOS version comes from the ROM
+    ; header, as md-microfirmware-template reads it; the machine from the
+    ; _MCH cookie. The RP clears the sentinel on the hello, well before
+    ; .vbl_loop first reads it: the IKBD reset below waits for the
+    ; keyboard's answer first.
+    lea     TOS_ROM_192K+2, a0
+    cmpi.w  #(TOS_ROM_192K >> 16), RESET_VECTOR_HI.w
+    beq.s   .hello_tos
+    lea     TOS_ROM_256K+2, a0
+.hello_tos:
+    move.w  (a0), d1                      ; TOS version, e.g. $0206
+    moveq   #0, d0
+    move.b  d1, d0                        ; low byte
+    lsr.w   #8, d1                        ; high byte
+    lea     ST_TOS_HI_WINDOW, a0
+    tst.b   (a0, d1.w)
+    lea     ST_TOS_LO_WINDOW, a0
+    tst.b   (a0, d0.w)
+    moveq   #0, d0                        ; no cookie jar: an ST
+    move.l  P_COOKIES.w, d1
+    beq.s   .hello_send
+    movea.l d1, a0
+.hello_cookie:
+    move.l  (a0)+, d1
+    beq.s   .hello_send                   ; end of the jar, no _MCH: an ST
+    cmpi.l  #'_MCH', d1
+    beq.s   .hello_mch
+    addq.w  #4, a0
+    bra.s   .hello_cookie
+.hello_mch:
+    move.l  (a0), d1                      ; $000F00mm: F family, mm $10 on a Mega STE
+    move.l  d1, d0
+    swap    d0
+    lsl.w   #4, d0                        ; family in bits 7..4
+    lsr.w   #4, d1
+    andi.w  #$000F, d1                    ; model in bits 3..0
+    or.w    d1, d0
+    andi.w  #$00FF, d0
+.hello_send:
+    lea     ST_HELLO_WINDOW, a0
+    tst.b   (a0, d0.w)
 
     ; Save the original screen base so we can restore it on ESC exit.
     move.w  #2, -(sp)                ; XBIOS Physbase

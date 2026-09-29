@@ -166,6 +166,22 @@
 #define CART_CMD_BOOT_GEM   2u
 #define CART_CMD_START      4u
 
+/* ROM3 signalling windows. The ST cannot write the cartridge window, so it
+ * tells the RP things by reading ROM3 addresses ($FB0000-$FBFFFF), which
+ * commemul's ring captures: the high byte of the captured address says what
+ * the read means, the low byte carries a value. Must match the equs in
+ * target/atarist/src/userfw.s.
+ *
+ *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
+ *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
+ *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
+ *   $FB89xx  TOS version, high byte; sent just before the hello
+ *   $FB8Axx  TOS version, low byte; sent just before the hello */
+#define CART_ROM3_WINDOW_MASK        0xFF00u
+#define CART_ROM3_HELLO_WINDOW       0x8800u
+#define CART_ROM3_TOS_HI_WINDOW      0x8900u
+#define CART_ROM3_TOS_LO_WINDOW      0x8A00u
+
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.
  * For uint32_t, m68k's BE long-read is two word reads in (high, low)

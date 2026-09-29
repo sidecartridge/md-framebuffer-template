@@ -23,6 +23,7 @@
 #include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
 #include "ikbd.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
+#include "st_session.h"
 
 /* VBL frame-sync. The m68k does a cart-bus read at
  * $FB8400 after each blit (see VBLSYNC_ADDR in userfw.s); the
@@ -250,9 +251,10 @@ void fb_render_frame(void) {
 }
 
 /* ROM3 ring dispatch: route each captured cart-bus read to the IKBD
- * demux and to the VBL frame-sync detector. */
+ * demux, the ST's hello and the VBL frame-sync detector. */
 static void fb_rom3_dispatch(uint16_t sample) {
   ikbd_consume_rom3_sample(sample);
+  st_session_consume_rom3_sample(sample);
   if ((sample & FB_VBLSYNC_HIMASK) == FB_VBLSYNC_HIBYTE) {
     s_vbl_seen++;
   }

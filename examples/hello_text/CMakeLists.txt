@@ -141,6 +141,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         romemul.c
         sdcard.c
         select.c
+        st_session.c
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files
