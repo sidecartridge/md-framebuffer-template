@@ -126,9 +126,12 @@ COUNTERS = (("stSessionHellos", "ST hellos"),
             ("s_vbl_seen", "blits acknowledged"),
             ("fbAckTimeouts", "publishes that timed out"),
             ("ikbdOverruns", "IKBD bytes lost"),
-            ("commOverruns", "ROM3 ring overruns"))
+            ("commOverruns", "ROM3 ring overruns"),
+            ("audioSlicesWritten", "audio slices written"),
+            ("audioLateSlices", "audio slices late"),
+            ("audioUnderruns", "audio underruns"))
 # Counters that --watch also prints as a rate.
-RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen")
+RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen", "audioSlicesWritten")
 # Variables postmortem prints when the ELF has them; a build without one
 # simply lacks it. Add the app's own here.
 POSTMORTEM_VARIABLES = tuple(n for n, _ in COUNTERS) + ("s_vbl_published",
