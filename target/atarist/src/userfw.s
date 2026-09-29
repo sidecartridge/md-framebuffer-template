@@ -93,6 +93,9 @@ UFW_LAST_FRAME        equ $00077FF0          ; word
 ; wait when the VBL handler has cleared the flag. It used to borrow
 ; TOS's _dskbufp ($4C6); it lives in userfw's own state area now.
 UFW_VBL_FLAG          equ $00077FF2          ; word: cleared by userfw_vbl, polled after each `stop`
+; The audio slice Timer-B plays this frame (0..AUDIO_SLICES-1); userfw_vbl
+; moves to the next one at every VBL.
+UFW_AUDIO_SLICE       equ $00077FF4          ; word
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -592,11 +595,13 @@ userfw:
     move.b  #TIMERB_COUNT, MFP_TBDR.w
     move.b  #TIMERB_PRESCALER, MFP_TBCR.w
 
-    ; Initialise A0 to the audio buffer base for the Timer-B handler.
+    ; Initialise A0 to the first audio slice for the Timer-B handler.
     ; A0 is NOT in the FBDRV_INLINE MOVEM list and no other code in
-    ; userfw touches it after this point, so the handler can rely on
+    ; userfw touches it after this point (userfw_vbl moves it to the next
+    ; slice with the interrupts masked), so the handler can rely on
     ; A0 holding a valid cart-buffer pointer at all times -- saves
     ; the push/pop around it in the hot IRQ path (-24 cyc/fire).
+    clr.w   UFW_AUDIO_SLICE
     movea.l #AUDIO_BUFFER_ADDR, a0
 
     bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
@@ -799,12 +804,12 @@ userfw:
 
 ; -------------------------------------------------------------------
 ; userfw_vbl -- VBL interrupt handler. Two jobs:
-;   1. Reset A0 to AUDIO_BUFFER_ADDR. This is the cart-buffer base,
-;      and Timer-B will start consuming samples from offset 0 on
-;      the next IRQ. Pinning A0 = base once per VBL eliminates the
-;      explicit `cmpa.l + bcs.s` wrap in the Timer-B hot path, so
-;      that handler shrinks to a single `move.b (a0)+, YM_DATA.w`
-;      + rte. A0 is dedicated to audio (excluded from the
+;   1. Point A0 at the next audio slice (AUDIO_BUFFER_ADDR + slice *
+;      AUDIO_SLICE_BYTES) and tell the RP which slice plays now.
+;      Timer-B consumes samples from the slice's start on the next IRQ.
+;      Moving A0 once per VBL eliminates the explicit `cmpa.l + bcs.s`
+;      wrap in the Timer-B hot path, so that handler stays a few
+;      moves + rte. A0 is dedicated to audio (excluded from the
 ;      FBDRV_INLINE MOVEM list and from the ACIA handler), so it's
 ;      safe to overwrite here from IRQ context.
 ;   2. Clear UFW_VBL_FLAG so .vbl_loop's `stop`-then-check wait can
@@ -815,7 +820,25 @@ userfw:
 ; firing. The ACIA IRQ ($118) is userfw's own (userfw_acia_irq), so
 ; GEMDOS's keyboard buffer is no longer filled; the keys go to the RP.
 userfw_vbl:
+    ; Move Timer-B to the next audio slice and tell the RP which one: a ROM3
+    ; read at AUDIO_SLICE_WINDOW + the slice. The RP writes only the slices
+    ; after it. Timer-B (IPL 6) can interrupt this handler (IPL 4), and it
+    ; reads a sample through A0: masked here, it never sees A0 anywhere but
+    ; on a slice. This handler interrupts the blit between a MOVEM load and
+    ; its store, when every register but A0 and A7 holds pixels: D0 is saved.
+    ; About 25 us per VBL; a Timer-B sample waits at most that long.
+    move.w  #$2700, sr
+    move.l  d0, -(sp)
+    move.w  UFW_AUDIO_SLICE, d0
+    addq.w  #1, d0
+    and.w   #AUDIO_SLICES-1, d0
+    move.w  d0, UFW_AUDIO_SLICE
+    movea.l #AUDIO_SLICE_WINDOW, a0
+    tst.b   (a0, d0.w)
+    lsl.w   #AUDIO_SLICE_SHIFT, d0
     movea.l #AUDIO_BUFFER_ADDR, a0
+    adda.w  d0, a0
+    move.l  (sp)+, d0
     clr.w   UFW_VBL_FLAG
     rte
 

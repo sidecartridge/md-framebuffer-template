@@ -37,11 +37,16 @@ SHARED_VARIABLES        equ (FB_FRAME_COUNTER_ADDR + 4)                ; $FA4010
 PALETTE_ADDR            equ (SHARED_BLOCK_ADDR + $40)                  ; $FA4040
 PALETTE_SIZE            equ 32                                         ; 16 words
 
-; Audio: (vA, vB) YM volume pairs, one pair per Timer-B interrupt; the VBL
-; handler points A0 back at the start every VBL. Filled by the RP.
+; Audio: (vA, vB) YM volume pairs, one pair per Timer-B interrupt, in
+; AUDIO_SLICES slices of one VBL each. The VBL handler points A0 at the next
+; slice and tells the RP which one (AUDIO_SLICE_WINDOW); the RP writes the
+; slices ahead of it, never the one playing.
 AUDIO_BUFFER_ADDR       equ (SHARED_BLOCK_ADDR + $100)                 ; $FA4100
 AUDIO_BUFFER_SIZE       equ 1024
 AUDIO_BUFFER_END        equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)    ; $FA4500
+AUDIO_SLICES            equ 4
+AUDIO_SLICE_BYTES       equ 256         ; one VBL is 224 of them at ~5,585 Hz
+AUDIO_SLICE_SHIFT       equ 8           ; log2(AUDIO_SLICE_BYTES)
 
 ; Boot block. The RP can refuse to start the app (st_session_veto_boot()): a
 ; non-zero status makes pre_auto print the NUL-terminated message and return
@@ -79,6 +84,7 @@ ROMCMD_START_ADDR       equ $FB0000
 IKBD_WINDOW_BASE        equ (ROMCMD_START_ADDR + $8200)  ; + an IKBD byte
 VBLSYNC_ADDR            equ (ROMCMD_START_ADDR + $8400)  ; blit done: the framebuffer is free
 IKBD_OVERRUN_ADDR       equ (ROMCMD_START_ADDR + $8500)  ; the keyboard ACIA overran
+AUDIO_SLICE_WINDOW      equ (ROMCMD_START_ADDR + $8600)  ; + the audio slice playing from this VBL
 ST_HELLO_WINDOW         equ (ROMCMD_START_ADDR + $8800)  ; + the machine: hello, a new session
 ST_TOS_HI_WINDOW        equ (ROMCMD_START_ADDR + $8900)  ; + TOS version, high byte
 ST_TOS_LO_WINDOW        equ (ROMCMD_START_ADDR + $8A00)  ; + TOS version, low byte

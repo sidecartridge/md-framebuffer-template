@@ -2,11 +2,23 @@
  * File: audio.c
  * Description: Cart-shared audio buffer producer.
  *
- * The m68k Timer-B IRQ reads sample bytes from the cart buffer at
- * CART_AUDIO_BUFFER_OFFSET (1024 B). The RP refills the buffer
- * once per VBL via audio_render_frame() (paced to ~50 Hz via
- * time_us_32). The library is format-agnostic -- it just dispatches
- * to whatever fill callback the app has installed.
+ * The m68k Timer-B IRQ plays (vA, vB) pairs from the cart buffer at
+ * CART_AUDIO_BUFFER_OFFSET, one slice of CART_AUDIO_SLICES per VBL: the
+ * ST's VBL handler moves Timer-B to the next slice and reports which one
+ * through the ROM3 window CART_ROM3_AUDIO_SLICE_WINDOW. The RP writes only
+ * the slices ahead of the one playing, so the ST never plays a slice while
+ * it is being written.
+ *
+ * Two stages, so that the sound does not depend on the app's frame loop:
+ *   - audio_render_frame(), from the main loop, tops up a small RAM FIFO
+ *     with the app's fill callback (a loop in flash, a .YMS file on the SD
+ *     card, the app's own generator);
+ *   - a repeating timer interrupt (audio_writer) follows the ST's reports
+ *     and moves one VBL of samples from the FIFO into each slice ahead.
+ * An app can take up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD frames to
+ * draw one without the sound noticing; a sample reaches the ST that many
+ * VBLs after the callback produced it, at most. When the FIFO is empty the
+ * slice holds the last sample (an underrun, counted), never stale data.
  *
  * See audio.h for the public API and `audio_play_loop` /
  * `audio_set_fill_callback` semantics.
@@ -19,30 +31,66 @@
 #include <string.h>
 
 #include "cart_shared.h"
+#include "commemul.h"
 #include "constants.h"
 #include "debug.h"
 #include "ff.h"
+#include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
 
-/* Per-VBL fill cadence. Refill every ~20 ms (one PAL VBL) so the
- * RP keeps pace with the m68k's Timer-B reads without burning more
- * main-loop cycles than necessary. */
+/* A PAL VBL, nominally. The slices follow the ST's own VBLs; this is the
+ * period the sample arithmetic below is for. */
 #define AUDIO_FRAME_PERIOD_US 20000u
 
-/* m68k Timer-B consumption per PAL VBL. Must stay in sync with the
- * Timer-B rate in target/atarist/src/userfw.s:
+/* One VBL of samples: what Timer-B plays between two VBLs. Must stay in
+ * sync with the Timer-B rate in target/atarist/src/userfw.s:
  *   TBDR=110 /4 prescaler -> 5,585.45 Hz -> 111.71 samples/VBL
  *   = 223.43 B/VBL @ 2 B/sample (dual-channel mode).
- * Rounded up to 224. The remaining ~800 B of CART_AUDIO_BUFFER_SIZE
- * is intentional headroom -- not consumed within a single VBL, but
- * left as a safety pad if the m68k's A0 cursor ever overruns its
- * per-VBL budget. */
+ * Rounded up to 224, of a slice's CART_AUDIO_SLICE_BYTES. */
 #define AUDIO_FILL_BYTES_PER_VBL 224u
 
+/* Slices written ahead of the one the ST plays. */
+#define AUDIO_SLICES_AHEAD 2u
+
+/* The FIFO between the app's fill callback and the slice writer, in VBLs of
+ * samples. More tolerates a longer stall of the main loop, and delays the
+ * sound as much: up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD VBLs. */
+#ifndef AUDIO_FIFO_SLICES
+#define AUDIO_FIFO_SLICES 4u
+#endif
+
+/* The slice writer runs this often; the ST's report is seen at most this
+ * long after its VBL, a slice ahead of when it is needed. */
+#define AUDIO_WRITER_PERIOD_US 4000
+/* How far back in the ROM3 ring the writer looks for the latest report: a
+ * frame adds a few samples (the report, the blit acknowledgement, keys). */
+#define AUDIO_REPORT_LOOKBACK 64u
+/* No new report for this long: the ST left userfw (GEM, a reset). The next
+ * report starts the count again. */
+#define AUDIO_REPORT_TIMEOUT_US 200000u
+
 static uint8_t *s_audio_buf;
-static uint32_t s_last_frame_us;
 static audio_fill_cb_t s_fill_cb;
+
+static uint8_t s_fifo[AUDIO_FIFO_SLICES][AUDIO_FILL_BYTES_PER_VBL];
+static volatile uint32_t s_fifo_head; /* slices produced (main loop) */
+static volatile uint32_t s_fifo_tail; /* slices consumed (writer) */
+
+static bool s_st_known;      /* the ST's slice is known */
+static uint32_t s_st_vbl;    /* VBLs counted from the reports; its low bits are the slice */
+static uint32_t s_next_vbl;  /* the next VBL whose slice is not written yet */
+static uint16_t s_last_report;
+static uint32_t s_last_report_us;
+static uint8_t s_hold[2];    /* the last sample written: what an underrun holds */
+static repeating_timer_t s_writer_timer;
+
+/* Readable over SWD by their symbols (tools/dev/swd.py counters). */
+uint32_t audioSlicesWritten;
+uint32_t audioUnderruns;  /* slices written as a held sample: the FIFO was empty */
+uint32_t audioLateSlices; /* slices the ST started before the RP had written them */
+
+static bool audio_writer(repeating_timer_t *timer);
 
 /* Static-loop convenience state. audio_play_loop() points
  * s_fill_cb at audio_loop_cb and stores the source span here. */
@@ -69,7 +117,6 @@ static FSIZE_t s_yms_data_offset;
 void audio_init(void) {
   uint8_t *base = (uint8_t *)&__rom_in_ram_start__;
   s_audio_buf = base + CART_AUDIO_BUFFER_OFFSET;
-  s_last_frame_us = 0;
   s_fill_cb = NULL;
   s_yms_open = false;
 
@@ -78,10 +125,14 @@ void audio_init(void) {
    * buffer stays zero until an app calls audio_play_loop() or
    * audio_set_fill_callback(). */
 
-  DPRINTF("audio_init: cart buffer %u B at offset $%04X, %u B/VBL refill\n",
-          (unsigned)CART_AUDIO_BUFFER_SIZE,
+  add_repeating_timer_us(-AUDIO_WRITER_PERIOD_US, audio_writer, NULL,
+                         &s_writer_timer);
+
+  DPRINTF("audio_init: %u slices of %u B at offset $%04X, %u B/VBL, "
+          "FIFO %u VBLs\n",
+          (unsigned)CART_AUDIO_SLICES, (unsigned)CART_AUDIO_SLICE_BYTES,
           (unsigned)CART_AUDIO_BUFFER_OFFSET,
-          (unsigned)AUDIO_FILL_BYTES_PER_VBL);
+          (unsigned)AUDIO_FILL_BYTES_PER_VBL, (unsigned)AUDIO_FIFO_SLICES);
 }
 
 void audio_set_fill_callback(audio_fill_cb_t cb) {
@@ -196,17 +247,80 @@ int audio_play_yms_file(const char *path) {
   return 0;
 }
 
+/* Write the slice for the ST's VBL number `vbl`: one VBL of samples from
+ * the FIFO, then the last sample held to the end of the slice (Timer-B may
+ * read a sample past a VBL's worth). An empty FIFO holds the last sample
+ * over the whole slice. */
+static void __not_in_flash_func(audio_write_slice)(uint32_t vbl) {
+  uint8_t *slice =
+      s_audio_buf + (vbl % CART_AUDIO_SLICES) * CART_AUDIO_SLICE_BYTES;
+  uint32_t filled = 0;
+  uint32_t tail = s_fifo_tail;
+  if (tail != s_fifo_head) {
+    const uint8_t *src = s_fifo[tail % AUDIO_FIFO_SLICES];
+    memcpy(slice, src, AUDIO_FILL_BYTES_PER_VBL);
+    s_hold[0] = src[AUDIO_FILL_BYTES_PER_VBL - 2u];
+    s_hold[1] = src[AUDIO_FILL_BYTES_PER_VBL - 1u];
+    s_fifo_tail = tail + 1u;
+    filled = AUDIO_FILL_BYTES_PER_VBL;
+  } else if (s_fill_cb != NULL) {
+    audioUnderruns++;
+  }
+  for (uint32_t i = filled; i < CART_AUDIO_SLICE_BYTES; i += 2u) {
+    slice[i] = s_hold[0];
+    slice[i + 1u] = s_hold[1];
+  }
+  audioSlicesWritten++;
+}
+
+/* The slice writer, every AUDIO_WRITER_PERIOD_US in a timer interrupt: find
+ * the slice the ST plays from its latest report, and write the
+ * AUDIO_SLICES_AHEAD slices after it. Everything it touches is in RAM. */
+static bool __not_in_flash_func(audio_writer)(repeating_timer_t *timer) {
+  (void)timer;
+  uint16_t report;
+  if (!commemul_latest(CART_ROM3_WINDOW_MASK, CART_ROM3_AUDIO_SLICE_WINDOW,
+                       AUDIO_REPORT_LOOKBACK, &report)) {
+    return true; /* the ST is not playing: nothing to follow */
+  }
+  uint32_t now_us = time_us_32();
+  if (report != s_last_report) {
+    s_last_report = report;
+    s_last_report_us = now_us;
+  } else if (now_us - s_last_report_us > AUDIO_REPORT_TIMEOUT_US) {
+    s_st_known = false; /* stale: the ST stopped playing */
+    return true;
+  }
+
+  uint32_t slice = report & (CART_AUDIO_SLICES - 1u);
+  if (!s_st_known) {
+    s_st_known = true;
+    s_st_vbl = slice;
+    s_next_vbl = slice + 1u;
+  } else {
+    s_st_vbl += (slice - s_st_vbl) % CART_AUDIO_SLICES;
+  }
+  if (s_next_vbl <= s_st_vbl) {
+    /* The ST started a slice that was never written for it. */
+    audioLateSlices += s_st_vbl + 1u - s_next_vbl;
+    s_next_vbl = s_st_vbl + 1u;
+  }
+  while (s_next_vbl <= s_st_vbl + AUDIO_SLICES_AHEAD) {
+    audio_write_slice(s_next_vbl);
+    s_next_vbl++;
+  }
+  return true;
+}
+
 void audio_render_frame(void) {
   if (s_fill_cb == NULL) {
     return;
   }
-
-  uint32_t now_us = time_us_32();
-  if (s_last_frame_us != 0 &&
-      (now_us - s_last_frame_us) < AUDIO_FRAME_PERIOD_US) {
-    return;
+  /* Top up the FIFO: the writer reads only the slices below s_fifo_head. */
+  while (s_fifo_head - s_fifo_tail < AUDIO_FIFO_SLICES) {
+    s_fill_cb(s_fifo[s_fifo_head % AUDIO_FIFO_SLICES],
+              AUDIO_FILL_BYTES_PER_VBL);
+    __dmb();
+    s_fifo_head = s_fifo_head + 1u;
   }
-  s_last_frame_us = now_us;
-
-  s_fill_cb(s_audio_buf, AUDIO_FILL_BYTES_PER_VBL);
 }
