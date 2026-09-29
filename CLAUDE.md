@@ -73,8 +73,8 @@ Build flow (orchestrated by `build.sh`):
 - VASM/`stcmd` errors like `the input device is not a TTY` mean `stcmd` was invoked without a PTY. `target/atarist/build.sh` already exports `STCMD_NO_TTY=1` for every `stcmd` call it makes; you only need to export it yourself if invoking `stcmd` directly from a non-TTY context (CI, sub-shells, build wrappers). Without it `stcmd make` fails; `build.sh` and `target/atarist/build.sh` then stop (`set -Eeo pipefail`) instead of going on with the previous `BOOT.BIN`, which used to give a working RP firmware that displayed garbage on the ST because `target_firmware.h` was stale.
 
 ### CI / release
-- `.github/workflows/build.yml` builds `pico_w` Release on PR.
-- `.github/workflows/release.yml` triggers on `v*` tags: builds, attaches UF2 + JSON to the GitHub Release, uploads to `s3://atarist.sidecartridge.com/`.
+- `.github/workflows/build.yml` builds `pico_w` release and debug on every PR, with the toolchain local builds use (ARM GNU Toolchain 14.2.rel1, downloaded from ARM and cached; Ubuntu's `gcc-arm-none-eabi` is another compiler and gives another image) and atarist-toolkit-docker v1.3.0 with `STCMD_NO_TTY=1`. The build is dated by its commit (`RELEASE_DATE`), so it matches a local build of that commit with the same date byte for byte. A job summary gives the build ID, the ELF's size and the UF2's MD5.
+- `.github/workflows/release.yml` triggers on `v*` tags: builds with the same toolchain, toolkit and date, attaches UF2 + JSON to the GitHub Release, uploads to `s3://atarist.sidecartridge.com/` (skipped when the app UUID is the dev UUID).
 - `make tag` tags HEAD with the contents of `version.txt` and pushes the tag (which triggers release).
 - `upload_s3.sh <file>` is a manual one-off uploader; needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 
