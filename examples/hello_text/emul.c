@@ -75,7 +75,7 @@ void emul_start() {
   audio_init();
 
   /* SD card -- best-effort (only needed if you stream audio/data). */
-  FATFS fsys;
+  static FATFS fsys; /* ~600 bytes: off core 0's stack */
   SettingsConfigEntry *folder =
       settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
   const char *folderName = folder ? folder->value : "/test";

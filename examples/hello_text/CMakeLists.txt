@@ -273,6 +273,17 @@ add_definitions(-DPICO_FLASH_ASSUME_CORE0_SAFE=1)
 # 9 KB the first settings allocation failed and the app jumped to Booster.
 target_compile_definitions(${PROJECT_NAME} PRIVATE PICO_HEAP_SIZE=0x8000)
 
+# Core 0's stack takes all of SCRATCH_Y (4 KB) instead of the SDK's 2 KB, and
+# a guard at its bottom turns an overflow into a HardFault instead of a silent
+# walk through SCRATCH_X into core 1's stack. Core 1's stack follows
+# PICO_STACK_SIZE too: all of SCRATCH_X, with its own guard. The deepest static
+# path from main, the boot's SD error trace, is 1,576 bytes (2,192 while the
+# FATFS object sat in emul_start's frame), plus newlib's printf, which the
+# analysis cannot see; core 1's jobs use well under 200 bytes.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PICO_STACK_SIZE=0x1000
+    PICO_USE_STACK_GUARDS=1)
+
 
 # Remove unused data
 target_link_options(${PROJECT_NAME} PRIVATE

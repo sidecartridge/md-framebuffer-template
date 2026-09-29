@@ -126,7 +126,9 @@ void emul_start() {
   // ignore the failure path or treat it as fatal. The folder name is
   // taken from per-app config (ACONFIG_PARAM_FOLDER) so apps can be
   // reconfigured from Booster without recompiling.
-  FATFS fsys;
+  // Static, not on core 0's stack: the FATFS object is about 600 bytes and
+  // f_mount keeps a pointer to it for as long as the card is used.
+  static FATFS fsys;
   SettingsConfigEntry *folder =
       settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
   const char *folderName = folder ? folder->value : "/test";
