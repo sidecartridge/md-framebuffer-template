@@ -62,6 +62,8 @@ static uint32_t s_loop_pos;
 
 static FIL s_yms_file;
 static bool s_yms_open;
+/* A read failed and has not succeeded since: logged once per streak. */
+static bool s_yms_failing;
 static FSIZE_t s_yms_data_offset;
 
 void audio_init(void) {
@@ -111,6 +113,10 @@ static void audio_yms_cb(uint8_t *buf, uint32_t bytes) {
   UINT br = 0;
   FRESULT res = f_read(&s_yms_file, buf, bytes, &br);
   if (res != FR_OK) {
+    if (!s_yms_failing) {
+      DPRINTF("audio: .YMS read failed (%d), playing silence\n", (int)res);
+      s_yms_failing = true;
+    }
     /* I/O error -- silence until the next call. The cursor is in
      * an undefined state, so seek back to the data start for the
      * next attempt. */
@@ -120,6 +126,7 @@ static void audio_yms_cb(uint8_t *buf, uint32_t bytes) {
     f_lseek(&s_yms_file, s_yms_data_offset);
     return;
   }
+  s_yms_failing = false;
   if (br < bytes) {
     /* EOF mid-fill: wrap to data start and read the remainder. */
     f_lseek(&s_yms_file, s_yms_data_offset);

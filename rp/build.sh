@@ -28,8 +28,9 @@ cd ..
 
 echo "Pinning the FatFs SDK versions..."
 cd fatfs-sdk
-#git checkout v3.5.1
-git checkout 6bdb39f96fe8b897aff12bf3416e32515792e318
+# v3.6.2 releases the card and SPI locks when a read fails: without it, the
+# second disk call after the card is pulled waits forever.
+git checkout tags/v3.6.2
 cd ..
 
 # FatFs configuration is overridden by rp/src/ff/ffconf.h; the CMake
