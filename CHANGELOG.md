@@ -2,6 +2,18 @@
 
 ## v1.1.0 (unreleased)
 
+### Sound
+
+- The sound never tears and never repeats. The ST plays one VBL of samples per slice of
+  the audio buffer and tells the RP which slice it plays; the RP writes only the slices
+  ahead, from a timer interrupt, so a slow frame no longer holds the sound back. Before,
+  the ST replayed a stale 20 ms of sound about four times a second even at 50 frames a
+  second, and the last sample or two of every frame came from the next one.
+- An app may take up to 80 ms between two calls to `audio_render_frame()`; a sample
+  reaches the speaker at most 120 ms after its fill callback made it
+  (`AUDIO_FIFO_SLICES`). When nothing is ready the last sample is held, never stale
+  sound, and `audioUnderruns` counts it.
+
 ### For developers
 
 - `tools/dev/`: build, flash and verify the RP from the host through a Raspberry Pi Debug Probe,

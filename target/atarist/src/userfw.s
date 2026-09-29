@@ -223,14 +223,14 @@ UFW_SCREEN_A          equ $00070000
 UFW_SCREEN_B          equ $00078000
 UFW_SCREEN_XOR        equ (UFW_SCREEN_A ^ UFW_SCREEN_B)
 
-; --- YM2149 sound chip (single-channel A 4-bit DAC) ----------------
+; --- YM2149 sound chip (channels A and B as a fake DAC) --------------
 ;
 ; PSG access: write a register number to $FFFF8800 (latch), then
-; write data to $FFFF8802. Reg 8 = ch A volume (low 4 bits). We
-; configure ch A as a "fake DAC": tone enabled, period = 0 (DC
-; clamp above the audio band so the volume register is the only
-; thing driving the output). Reg 8 stays latched after boot, so the
-; Timer-B handler just writes a single byte to YM_DATA per fire.
+; write data to $FFFF8802. Regs 8 and 9 = ch A and ch B volume (low 4
+; bits). Both channels are a "fake DAC": tone enabled, period = 0 (DC
+; clamp above the audio band so the volume registers are the only
+; thing driving the output). Reg 8 is latched at boot; each Timer-B
+; fire writes ch A, latches reg 9, writes ch B and latches reg 8 again.
 YM_SELECT             equ $FFFF8800
 YM_DATA               equ $FFFF8802
 YM_REG_MIXER          equ 7                  ; tone+noise enables
@@ -305,18 +305,18 @@ MFP_TACR              equ $FFFFFA19          ; Timer-A control register (cleared
 MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (delay-mode + prescaler)
 MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit countdown)
 
-; Timer-B audio rate. MFP master clock = 2.4576 MHz. We pick a /4
-; prescaler with count 110:
+; Timer-B audio rate, and everything that follows from it. MFP master
+; clock = 2.4576 MHz, /4 prescaler, count 110:
 ;   f = 2.4576 MHz / (4 * 110) = 5,585.45 Hz
-; (~10.9% slower than STE-low's 6,258 Hz). The count was raised from
-; 98 -> 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 macro;
-; sample.h is still generated at the older 6,269 Hz rate, so the
-; jingle plays back ~11% lower pitch (about 2 semitones down) -- a
-; modest but audible detune. Regenerate sample.h at 5585 Hz via
-; wav_to_ym4.py if exact pitch matters. PAL VBL = 49.92 Hz so
-; ~111.71 samples/VBL. At 2 bytes per sample (dual-ghost LUT) that's
-; ~223 bytes/VBL in the cart buffer (audio.c's AUDIO_BYTES_PER_VBL
-; = 224 matches this).
+; (~10.9% slower than STE-low's 6,258 Hz; the count was raised from 98
+; to 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 blit).
+;   -> 111.7 samples per PAL VBL, 2 bytes each (vA, vB): 224 bytes per
+;      VBL (AUDIO_FILL_BYTES_PER_VBL in rp/src/audio.c), one audio slice
+;      of AUDIO_SLICE_BYTES (inc/sidecart_layout.s);
+;   -> the RP's rate AUDIO_NATIVE_RATE_HZ (audio.c), the rate .YMS files
+;      must carry, and the rate the built-in jingle (audio_sample.h) is
+;      converted at (tools/wav_to_ym4.py --target-rate 5585).
+; tests/host/test_layout.py checks that those places agree.
 TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
 TIMERB_COUNT          equ 110                ; ~5,585 Hz (~112 samples/PAL VBL)
 
@@ -855,8 +855,8 @@ userfw_vbl:
 ;   3. Write vB to YM ch B vol.
 ;   4. Re-latch reg 8 so the next fire writes ch A immediately.
 ;
-; A0 is a DEDICATED cart audio-buffer cursor (userfw_vbl resets it
-; to AUDIO_BUFFER_ADDR each VBL; postinc walks 2 bytes/fire).
+; A0 is a DEDICATED cart audio-buffer cursor (userfw_vbl points it at
+; the next audio slice each VBL; postinc walks 2 bytes/fire).
 ;
 ; MFP is in auto-EOI mode (VR S=0) so the in-service bit clears
 ; automatically on each IACK cycle.

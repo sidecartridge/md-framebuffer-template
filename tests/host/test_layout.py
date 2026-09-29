@@ -96,6 +96,7 @@ def st_names():
 def rp_names():
     inc = os.path.join(RP_SRC, "include")
     return c_defines(os.path.join(inc, "cart_shared.h"), os.path.join(inc, "ikbd.h"),
+                     os.path.join(inc, "audio_sample.h"),
                      os.path.join(RP_SRC, "fb.c"), os.path.join(RP_SRC, "audio.c"))
 
 
@@ -188,6 +189,9 @@ PAIRS = [
     ("audio sample rate (Hz)", lambda st: round(
         MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
      lambda rp: rp["AUDIO_NATIVE_RATE_HZ"]),
+    ("built-in jingle's sample rate (Hz)", lambda st: round(
+        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
+     lambda rp: rp["AUDIO_SAMPLE_RATE_HZ"]),
 ]
 
 

@@ -38,9 +38,11 @@ resets it. Both reset the whole chip through the watchdog, never with OpenOCD's
 `counters` reads the firmware's counters while it runs: the ST's hellos
 (st_session.c), the frames published and the blits the ST acknowledged, the
 publishes that gave up waiting for an acknowledgement (fb.c), the IKBD bytes
-the keyboard ACIA lost (ikbd.c) and the ROM3 ring's overruns (commemul.c).
-With --watch it prints what changed every SECONDS, with rates: while the ST
-runs userfw and the app publishes every frame, both run at 50 a second.
+the keyboard ACIA lost (ikbd.c), the ROM3 ring's overruns (commemul.c), and
+the audio slices written, late and underrun (audio.c). With --watch it prints
+what changed every SECONDS, with rates: while the ST runs userfw and the app
+publishes every frame, frames and blits run at 50 a second; audio slices do
+whatever the frame rate.
 `heap` reads newlib's malloc state: the heap's size, its peak and the free
 space inside it. Without --elf, both use the cached ELF whose build ID the RP
 carries (tools/dev/builds/elf, filled by flash.sh).
