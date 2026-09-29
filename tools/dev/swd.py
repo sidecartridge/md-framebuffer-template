@@ -620,9 +620,14 @@ def gdb_command() -> str:
 def cmd_postmortem(args: argparse.Namespace) -> int:
     elf = matching_elf(args.elf)
     gdb = gdb_command()
+    # No GDB memory map: to build one, OpenOCD probes the flash size on
+    # connect with a routine in its work area, and afterwards core 0's MSP
+    # still held the routine's stack (0x20040400, in the work area) while its
+    # SP was right; resumed, core 0 locked up at once. GDB needs no memory
+    # map to read the stacks and variables.
     server = openocd_command() + [
         "-c", f"gdb_port {GDB_PORT}", "-c", "tcl_port disabled",
-        "-c", "telnet_port disabled"]
+        "-c", "telnet_port disabled", "-c", "gdb_memory_map disable"]
     if args.leave_halted:
         # OpenOCD resumes the target when GDB detaches, unless told not to.
         for core in CORES:
