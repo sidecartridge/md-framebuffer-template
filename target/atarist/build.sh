@@ -8,22 +8,41 @@ trap 'echo "ERROR: ${BASH_SOURCE[0]}: failed at line ${LINENO}" >&2' ERR
 
 # Ensure an argument is provided
 if [ -z "$1" ]; then
-    echo "Usage: $0 <working_folder> all|release"
+    echo "Usage: $0 <working_folder> all|release [debug_mode]"
     exit 1
 fi
 
 if [ -z "$2" ]; then
-    echo "Usage: $0 <working_folder> all|release"
+    echo "Usage: $0 <working_folder> all|release [debug_mode]"
     exit 1
 fi
 
 working_folder=$1
 build_type=$2
+# 0 or 1, assembled as _DEBUG. Unset, the Makefile's default applies.
+debug_mode=${3:-${DEBUG_MODE:-}}
 target_firmware="target_firmware.h"
+
+make_args=("$build_type")
+if [ -n "$debug_mode" ]; then
+    make_args+=("DEBUG_MODE=$debug_mode")
+fi
 
 # (fbdrv.s used to be regenerated here by gen_fbdrv.py before the
 # m68k make. That step is gone: the cart->ST copy is now the
 # FBDRV_INLINE macro inside userfw.s.)
+
+# The cartridge header's GEMDOS date and time follow RELEASE_DATE
+# ("YYYY-MM-DD HH:MM:SS") when it is set, so a build with a fixed date is
+# byte-identical; otherwise the Makefile takes the time of the build.
+if [ -n "${RELEASE_DATE:-}" ]; then
+    d=${RELEASE_DATE%% *}
+    t=${RELEASE_DATE##* }
+    year=$((10#${d:0:4})) month=$((10#${d:5:2})) day=$((10#${d:8:2}))
+    hour=$((10#${t:0:2})) minute=$((10#${t:3:2})) second=$((10#${t:6:2}))
+    make_args+=("GEMDOS_DATE_FORMATTED=$(((year - 1980) << 9 | month << 5 | day))")
+    make_args+=("GEMDOS_TIME_FORMATTED=$((hour << 11 | minute << 5 | second / 2))")
+fi
 
 # ST_WORKING_FOLDER=$working_folder/configurator stcmd make $build_type
 # STCMD_NO_TTY=1 keeps docker working when invoked from non-TTY contexts
@@ -31,7 +50,7 @@ target_firmware="target_firmware.h"
 # with "the input device is not a TTY" and the build silently keeps
 # whatever BOOT.BIN was previously generated.
 make_status=0
-STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd make $build_type || make_status=$?
+STCMD_NO_TTY=1 ST_WORKING_FOLDER=$working_folder stcmd make "${make_args[@]}" || make_status=$?
 if [ "$make_status" -ne 0 ]; then
     echo "ERROR: m68k make failed (status $make_status)"
     exit $make_status

@@ -246,6 +246,10 @@ message("DEBUG_MODE: " ${_DEBUG})
 add_definitions(-DRELEASE_TYPE="${RELEASE_TYPE}")
 add_definitions(-DRELEASE_VERSION="${RELEASE_VERSION}")
 add_definitions(-DRELEASE_DATE="${RELEASE_DATE}")
+# The SDK's binary info carries a build date (picotool info shows it). It is
+# __DATE__ by default, the day of the compile, so two builds of one commit
+# made on different days differed; it is RELEASE_DATE instead.
+add_definitions(-DPICO_PROGRAM_BUILD_DATE="${RELEASE_DATE}")
 
 # Pass the APP_UUID_KEY to the C compiler
 if(DEFINED ENV{APP_UUID_KEY} AND NOT "$ENV{APP_UUID_KEY}" STREQUAL "")

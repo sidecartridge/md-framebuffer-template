@@ -57,12 +57,15 @@ else
     VERSION_FILE="version-$RELEASE_TYPE.txt"
 fi
 
-# Read the release version from the version.txt file
-export RELEASE_VERSION=$(cat "$VERSION_FILE" | tr -d '\r\n ')
+# Read the release version from the version.txt file. Assigned before it is
+# exported: `export VAR=$(...)` would hide a failed read.
+RELEASE_VERSION=$(cat "$VERSION_FILE" | tr -d '\r\n ')
+export RELEASE_VERSION
 echo "Release version: $RELEASE_VERSION"
 
-# Get the release date and time from the current date
-export RELEASE_DATE=$(date +"%Y-%m-%d %H:%M:%S")
+# Get the release date and time from the current date, unless the caller set
+# one: a fixed RELEASE_DATE makes two builds of the same commit byte-identical.
+export RELEASE_DATE=${RELEASE_DATE:-$(date +"%Y-%m-%d %H:%M:%S")}
 echo "Release date: $RELEASE_DATE"
 
 # Set the board type to be used for building
@@ -71,18 +74,25 @@ export BOARD_TYPE=${1:-pico_w}
 export PICO_BOARD=$BOARD_TYPE
 echo "Board type: $BOARD_TYPE"
 
-# Set the release or debug build type
-# If nothing passed as second argument, use release
-export BUILD_TYPE=${2:-release}
+# Build type, case-insensitive. If nothing is passed, use release. debug is
+# the same build with DEBUG_MODE=1, so DPRINTF traces go to the UART console.
+BUILD_TYPE=$(echo "${2:-release}" | tr '[:upper:]' '[:lower:]')
+case "$BUILD_TYPE" in
+    release|debug) ;;
+    *)
+        echo "ERROR: unknown build type '$2'. Use release or debug."
+        exit 1
+        ;;
+esac
+export BUILD_TYPE
 echo "Build type: $BUILD_TYPE"
-BUILD_TYPE_LOWER=$(echo "$BUILD_TYPE" | tr '[:upper:]' '[:lower:]')
 
 # Translate (board, build_type) into a CMakePresets.json preset name. The
 # preset's `environment` block sets PICO_BOARD + DEBUG_MODE for CMake, so
 # the script's exports above are redundant when using presets -- left in
 # place for parity with the env CMakeLists also reads (RELEASE_VERSION,
 # RELEASE_DATE).
-if [ "$BUILD_TYPE_LOWER" = "release" ]; then
+if [ "$BUILD_TYPE" = "release" ]; then
     export DEBUG_MODE=0
     PRESET_KIND="release"
 else
@@ -112,7 +122,7 @@ rm -rf "$BUILD_DIR"
 # Copy the built firmware to the /dist folder
 mkdir -p dist
 echo "Copying the built firmware to the dist folder"
-if [ "$BUILD_TYPE_LOWER" = "release" ]; then
+if [ "$BUILD_TYPE" = "release" ]; then
     cp "$BUILD_DIR/rp.uf2" "dist/rp-$BOARD_TYPE.uf2"
 else
     cp "$BUILD_DIR/rp.uf2" "dist/rp-$BOARD_TYPE-$BUILD_TYPE.uf2"
