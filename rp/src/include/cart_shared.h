@@ -14,7 +14,8 @@
  * removed; the layout constants survived the
  * cull because IKBD and the framebuffer pipeline both need them.
  *
- * Layout must match target/atarist/src/main.s on the m68k side.
+ * Layout must match target/atarist/src/inc/sidecart_layout.s on the m68k
+ * side; tests/host/test_layout.py checks that they agree.
  */
 
 #ifndef CART_SHARED_H
@@ -25,7 +26,7 @@
 
 /* All offsets are relative to __rom_in_ram_start__, which mirrors
  * ROM4_ADDR ($FA0000) on the m68k side. Layout (single source of
- * truth, must match target/atarist/src/main.s):
+ * truth, must match target/atarist/src/inc/sidecart_layout.s):
  *
  *   $FA0000  CARTRIDGE             m68k header + code (max 16 KB).
  *                                  Includes the unrolled MOVEM-loop
@@ -165,7 +166,7 @@
  *   - Net: ~285 us VBL slack reclaimed on the m68k side
  */
 #define CART_FB_CHUNK_BYTES           48   /* size of one m68k MOVEM-burst group (12 longwords; A0 and A7 omitted -- A0 is the dedicated Timer-B audio pointer, A7 is the SP) */
-#define CART_FB_BLIT_LINES            200  /* must match FB_COPY_LINES in target/atarist/src/userfw.s */
+#define CART_FB_BLIT_LINES            200  /* must match FB_COPY_LINES in target/atarist/src/inc/sidecart_layout.s */
 #define CART_FB_BLIT_BYTES            (CART_FB_BLIT_LINES * 160)  /* total bytes the m68k blits per VBL (160 = ST 4bpp scanline) */
 #define CART_FB_CHUNK_COUNT           (CART_FB_BLIT_BYTES / CART_FB_CHUNK_BYTES)  /* iterations of the unrolled MOVEM-pair */
 #define CART_FB_CHUNK_COVERED         (CART_FB_CHUNK_BYTES * CART_FB_CHUNK_COUNT)
@@ -174,7 +175,7 @@
 /* RP→m68k command sentinel values. The m68k polls the longword at
  * CART_CMD_SENTINEL_OFFSET; non-zero values steer it out of the
  * userfw loop or the bootstrap dispatcher. Must match the m68k-side
- * equs in target/atarist/src/main.s. */
+ * equs in target/atarist/src/inc/sidecart_layout.s. */
 #define CART_CMD_NOP        0u
 #define CART_CMD_RESET      1u
 #define CART_CMD_BOOT_GEM   2u
@@ -184,7 +185,7 @@
  * tells the RP things by reading ROM3 addresses ($FB0000-$FBFFFF), which
  * commemul's ring captures: the high byte of the captured address says what
  * the read means, the low byte carries a value. Must match the equs in
- * target/atarist/src/userfw.s.
+ * target/atarist/src/inc/sidecart_layout.s.
  *
  *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
  *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
