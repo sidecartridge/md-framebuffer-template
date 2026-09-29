@@ -35,7 +35,10 @@ ROM4_ADDR			equ $FA0000
 ;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since the handshake was removed)
 ;   $FA400C  FB_FRAME_COUNTER_ADDR	4 B
 ;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots, app-free).
-;   $FA4100  APP_FREE_ADDR	      ~16.5 KB free arena, ends at FRAMEBUFFER
+;   $FA4100  AUDIO_BUFFER_ADDR	      1024 B (YM volume pairs)
+;   $FA4500  BOOT_STATUS_ADDR	      2 B  (read once in pre_auto: 0 = start the app)
+;   $FA4502  BOOT_MESSAGE_ADDR	      126 B (why the RP refused; printed before GEM)
+;   $FA4580  APP_FREE_ADDR	      ~15.4 KB free arena, ends at FRAMEBUFFER
 ;   $FA8300  FRAMEBUFFER_ADDR	      32000 B (320x200 4bpp, flush at top)
 ;   $FAFFFF  end of region
 
@@ -59,8 +62,15 @@ AUDIO_BUFFER_ADDR	equ (SHARED_BLOCK_ADDR + $100)			; $FA4100
 AUDIO_BUFFER_SIZE	equ 1024
 AUDIO_BUFFER_END	equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)	; $FA4500
 
-; APP_FREE starts after the audio buffer.
-APP_FREE_ADDR		equ AUDIO_BUFFER_END				; $FA4500
+; Boot block, after the audio buffer. The RP can refuse to start the app
+; (st_session_veto_boot() in rp/src/st_session.c): a non-zero status makes
+; pre_auto print the NUL-terminated message and return to GEM.
+BOOT_STATUS_ADDR	equ AUDIO_BUFFER_END				; $FA4500
+BOOT_MESSAGE_ADDR	equ (BOOT_STATUS_ADDR + 2)			; $FA4502
+BOOT_MESSAGE_SIZE	equ 126
+
+; APP_FREE starts after the boot block.
+APP_FREE_ADDR		equ (BOOT_MESSAGE_ADDR + BOOT_MESSAGE_SIZE)	; $FA4580
 FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
 
 ; Left over from the removed mono boot UI, which filled the first 8000
@@ -277,7 +287,20 @@ start_rom_code:
 ; a 4bpp image landed on ST rows 0, 4, 8, 12, 16). Boot straight into
 ; the user firmware: userfw owns the VBL loop and runs the FBDRV_INLINE
 ; copy, which copies the cart FB to ST screen verbatim with the correct 4bpp planar interpretation.
+; Unless the RP refused to start the app: then print its reason and return
+; to GEM, as for high resolution.
+	tst.w BOOT_STATUS_ADDR
+	bne.s .boot_vetoed
 	jmp USERFW
+
+.boot_vetoed:
+	print BOOT_MESSAGE_ADDR
+	print .crlf_txt
+	bra boot_gem
+
+.crlf_txt:
+	dc.b $d,$a,0
+	even
 
 .highres_unsupported:
 	print .highres_unsupported_txt

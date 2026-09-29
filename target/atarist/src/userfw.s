@@ -72,6 +72,9 @@ FBDRV_DEBUG_MARKS     equ 0
 ; also live here. 20 bytes used; SCREEN_A's tail at $77D00 has 768
 ; bytes available (shifter only reads 200*160 = 32000 B of each
 ; screen page, allocation is 32 KB).
+; UFW_RESET_STUB: .cold_reset copies userfw_reset_stub here and runs it,
+; so the ST's last instructions before its cold reset come from RAM.
+UFW_RESET_STUB        equ $00077F00          ; up to $77FDF
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
@@ -194,10 +197,15 @@ FB_FRAME_COUNTER      equ $00FA400C
 
 ; RP→m68k command sentinel at $FA4000. The RP IKBD demux writes
 ; CMD_BOOT_GEM here when it decodes an ESC keypress; userfw's main
-; loop polls and exits back to GEM on match. Must agree
-; with main.s's CMD_MAGIC_SENTINEL_ADDR / CMD_BOOT_GEM equs.
+; loop polls and exits back to GEM on match. CMD_RESET comes before the
+; RP reboots into Booster: userfw then cold-resets the ST (.cold_reset).
+; Must agree with main.s's CMD_MAGIC_SENTINEL_ADDR / CMD_* equs.
 CMD_MAGIC_SENTINEL    equ $00FA4000
+CMD_RESET             equ 1
 CMD_BOOT_GEM          equ 2
+; Delay before the cold reset, so TOS scans the cartridge only once Booster
+; serves it. Mirrors PRE_RESET_WAIT in main.s, the delay Booster uses too.
+UFW_PRE_RESET_WAIT    equ $FFFFF
 
 ; 16-entry ST palette slot. 32 bytes of palette words
 ; published by the RP; .vbl_loop applies them to PALETTE_BASE each
@@ -723,9 +731,12 @@ userfw:
 
 .input_check:
     ; ESC detection: the RP-side IKBD demux writes
-    ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL on ESC press. Any other
+    ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL on ESC press. CMD_RESET:
+    ; the RP is about to reboot into Booster. Any other
     ; sentinel value (NOP, future commands) leaves the loop running.
     move.l  CMD_MAGIC_SENTINEL, d0
+    cmp.l   #CMD_RESET, d0
+    beq     .cold_reset
     cmp.l   #CMD_BOOT_GEM, d0
     bne     .vbl_loop
 
@@ -779,6 +790,24 @@ userfw:
     trap    #14
     lea     12(sp), sp
     rts
+
+    ; --- CMD_RESET: cold-reset the ST, from RAM -------------------
+    ;
+    ; The RP reboots into Booster about 100 ms after it asks for this,
+    ; and from then on the cartridge answers nothing useful: nothing may
+    ; run from it. Mask every interrupt (userfw's handlers live in the
+    ; cartridge), copy userfw_reset_stub to UFW_RESET_STUB and run it
+    ; there. TOS's cold boot reinitialises the shifter, MFP, IKBD, YM
+    ; and every vector userfw took, so nothing is restored by hand.
+.cold_reset:
+    move.w  #$2700, sr
+    lea     userfw_reset_stub(pc), a1
+    lea     UFW_RESET_STUB, a2
+    moveq   #((userfw_reset_stub_end - userfw_reset_stub) / 2) - 1, d0
+.copy_reset_stub:
+    move.w  (a1)+, (a2)+
+    dbf     d0, .copy_reset_stub
+    jmp     UFW_RESET_STUB
 
 ; -------------------------------------------------------------------
 ; userfw_vbl -- VBL interrupt handler. Two jobs:
@@ -873,6 +902,24 @@ userfw_acia_irq:
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:
     rte
+
+; -------------------------------------------------------------------
+; userfw_reset_stub -- copied to UFW_RESET_STUB and run there by
+; .cold_reset: position-independent, and it reads nothing from the
+; cartridge. Waits UFW_PRE_RESET_WAIT (a couple of seconds on an 8 MHz
+; ST), clears TOS's memory-valid magics so it takes this for a power-on,
+; and jumps through the reset vector.
+userfw_reset_stub:
+    move.l  #UFW_PRE_RESET_WAIT, d0
+.wait:
+    subq.l  #1, d0
+    bne.s   .wait
+    clr.l   $420.w                    ; memvalid
+    clr.l   $43A.w                    ; memval2
+    clr.l   $51A.w                    ; memval3
+    movea.l $4.w, a0
+    jmp     (a0)
+userfw_reset_stub_end:
 
 ; The NOP tail. This module is the last in the cartridge image, and
 ; firmware.py strips trailing zero bytes from it: the last word must be

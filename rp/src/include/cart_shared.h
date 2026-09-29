@@ -43,7 +43,10 @@
  *                                        previous iteration)
  *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots,
  *                                        app-free).
- *   $FA4100  APP_FREE           ~16.5 KB free arena, ends at FRAMEBUFFER
+ *   $FA4100  AUDIO_BUFFER       1024 B (YM volume pairs)
+ *   $FA4500  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
+ *   $FA4502  BOOT_MESSAGE     126 B  (why the RP refused to start)
+ *   $FA4580  APP_FREE          ~15.4 KB free arena, ends at FRAMEBUFFER
  *   $FA8300  FRAMEBUFFER          32 KB (320x200 4 bpp low-res)
  *   $FAFFFF  end of region
  */
@@ -80,9 +83,21 @@
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 #define CART_AUDIO_BUFFER_SIZE           1024
 
-/* APP_FREE arena starts after the audio buffer. */
-#define CART_APP_FREE_OFFSET                                                  \
+/* Boot block, after the audio buffer. The ST reads the status word once
+ * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which
+ * the window's erase at boot leaves) starts the app; anything else makes
+ * pre_auto print the NUL-terminated text at CART_BOOT_MESSAGE_OFFSET and
+ * return to GEM. Written through st_session_veto_boot(). */
+#define CART_BOOT_STATUS_OFFSET                                               \
   (CART_AUDIO_BUFFER_OFFSET + CART_AUDIO_BUFFER_SIZE)
+#define CART_BOOT_OK                  0u
+#define CART_BOOT_VETOED              1u
+#define CART_BOOT_MESSAGE_OFFSET      (CART_BOOT_STATUS_OFFSET + 2)
+#define CART_BOOT_MESSAGE_SIZE        126  /* bytes, the NUL included */
+
+/* APP_FREE arena starts after the boot block. */
+#define CART_APP_FREE_OFFSET                                                  \
+  (CART_BOOT_MESSAGE_OFFSET + CART_BOOT_MESSAGE_SIZE)
 
 /* Framebuffer sized for low-res 4 bpp (320 x 200 = 32000 bytes). Sits
  * flush against the top of the 64 KB region: end = $FB0000 exactly,

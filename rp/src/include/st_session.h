@@ -42,4 +42,21 @@ bool st_session_consume_boot(void);
 uint8_t st_session_machine(void);
 uint16_t st_session_tos_version(void);
 
+/* Refuses to start the app on the ST: pre_auto prints `reason` and returns to
+ * GEM, as it does in high resolution. At most CART_BOOT_MESSAGE_SIZE - 1
+ * characters; "\r\n" breaks a line, and the ST adds one at the end. The ST
+ * reads it once per boot, before userfw starts (on a power-on about 0.3 s
+ * after the RP starts): set it later and it applies from the next ST reset.
+ * It holds until st_session_allow_boot(), so the ST can be reset again once
+ * the cause is gone (a card inserted, say). */
+void st_session_veto_boot(const char *reason);
+void st_session_allow_boot(void);
+
+/* Leaves the app for Booster, without a power cycle: saves BOOT_FEATURE =
+ * BOOSTER in the global settings, asks the ST for a cold reset and restarts
+ * the RP, whose main() then jumps to Booster. Never returns. The ST acts on
+ * it only while userfw runs; from GEM, reset the ST by hand. It writes flash:
+ * call it from the main loop, with no job running on core 1. */
+void st_session_return_to_booster(void);
+
 #endif /* ST_SESSION_H */

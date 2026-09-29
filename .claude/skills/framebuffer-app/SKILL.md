@@ -110,6 +110,14 @@ recompiling): defaults live in `rp/src/aconfig.c` `defaultEntries[]` as
 v)` then `settings_save(aconfig_getContext(), true)`. (This is how the SD
 folder name `ACONFIG_PARAM_FOLDER` is supplied.)
 
+**The ST's boot** (`st_session.h`): `st_session_consume_boot()` is true once
+per ST boot (restart your app's state). `st_session_veto_boot("reason")`
+makes the ST print the reason and go to GEM instead of starting the app
+(e.g. a file the app needs is missing); it must be set within about 0.3 s
+of a power-on to catch that boot, and holds until `st_session_allow_boot()`.
+`st_session_return_to_booster()` leaves for Booster without a power cycle
+(the ST cold-resets into it); call it from the main loop, never returns.
+
 Main loop shape (in `emul_start()`):
 
 ```c
