@@ -18,6 +18,10 @@ Usage:
     python3 tools/dev/swd.py counters [--elf ELF] [--watch SECONDS]
     python3 tools/dev/swd.py heap [--elf ELF] [--watch SECONDS] [--csv FILE]
     python3 tools/dev/swd.py select short|long|release [--hold-ms MS] [--force]
+    python3 tools/dev/swd.py key KEY... [--press | --release] [--elf ELF]
+    python3 tools/dev/swd.py app NAME [WORD ...] [--elf ELF]
+    python3 tools/dev/swd.py fb OUT.png [--pair] [--raw] [--now] [--scale N]
+    python3 tools/dev/swd.py shared [--elf ELF] [--all]
     python3 tools/dev/swd.py crash [--elf ELF]
     python3 tools/dev/swd.py postmortem [--elf ELF] [--leave-halted]
 
@@ -47,6 +51,23 @@ firmware sees a real press without any code of its own. `short` holds 300 ms
 (the RP restarts), `long` holds SELECT_LONG_RESET + 1 s (rp/src/include/select.h)
 and needs `--force`, because it is a factory reset (reset_deviceAndEraseFlash).
 `release` clears a stuck override.
+
+`key` and `app` need a debug build: they write the debug mailbox
+(rp/src/include/devhooks.h) and wait until the main loop acknowledges it.
+`key` types on the ST's keyboard: each KEY (a scancode such as 0x02, or a
+name: esc, return, space, up, down, left, right, 1-0, a-z...) is pressed and
+released, and the bytes enter where the ST's own do, so the app cannot tell
+the difference. `app` sends a command named by a DEVHOOKS_APP_<NAME> define in
+rp/src/include, with optional 16-bit words: the demo dispatcher has `demo N`,
+`menu`, `overlay 0|1` and `slow_frame MS` (demo.h).
+
+`fb` writes the framebuffer as the ST shows it, in colour, as a PNG: it waits
+for the next complete frame (a watchpoint on the frame counter stops core 0
+for the dump, about 0.1 s; core 1 and the ST keep running). `--pair` writes
+two consecutive frames, OUT-1 and OUT-2; `--raw` also the planar bytes;
+`--now` reads the window as it is, for an app that no longer publishes.
+`shared` prints the command sentinel, the frame counter, the shared-variable
+slots, the palette, the head of the audio buffer and the boot status.
 
 `crash` explains the last reboot without stopping the RP: the watchdog reason
 and scratch registers, with code addresses resolved to source lines.
@@ -113,6 +134,21 @@ RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen")
 POSTMORTEM_VARIABLES = tuple(n for n, _ in COUNTERS) + ("s_vbl_published",
                                                         "commReadIdx")
 BUILD_ID_SYMBOL = "release_build_id"
+# DevhooksMailbox (rp/src/include/devhooks.h): offsets of its fields.
+MAILBOX_SYMBOL = "devhooksMailbox"
+MAILBOX_MAGIC = 0x444B4831
+MB_SEQ, MB_ACK, MB_KIND, MB_RESULT, MB_CMD, MB_SIZE, MB_PAYLOAD = (
+    4, 8, 12, 16, 20, 22, 24)
+MAILBOX_WORDS = 16
+KIND_KEY, KIND_APP = 1, 2
+# IKBD scancodes (the ST's keyboard, the PC/XT set) by name, for `key`.
+SCANCODES = {"esc": 0x01, "backspace": 0x0E, "tab": 0x0F, "return": 0x1C,
+             "space": 0x39, "up": 0x48, "down": 0x50, "left": 0x4B,
+             "right": 0x4D, "help": 0x62, "undo": 0x61}
+SCANCODES.update({str(n % 10): 0x01 + n for n in range(1, 11)})
+SCANCODES.update(zip("qwertyuiop", range(0x10, 0x1A)))
+SCANCODES.update(zip("asdfghjkl", range(0x1E, 0x27)))
+SCANCODES.update(zip("zxcvbnm", range(0x2C, 0x33)))
 CART_SHARED_H = os.path.join(INCLUDE_DIR, "cart_shared.h")
 ST_WINDOW = 0xFA0000  # where the ST sees the cartridge window
 # Core 0's DWT watchpoint comparators (ARMv6-M): writing 0 to FUNCTIONn
@@ -613,6 +649,80 @@ def cmd_shared(args: argparse.Namespace) -> int:
     return 0
 
 
+def mailbox_request(elf: str, kind: int, command_id: int, words: list[int],
+                    timeout: float = 5.0) -> int:
+    """Send one request through the debug mailbox; return its result."""
+    if len(words) > MAILBOX_WORDS:
+        raise SwdError(f"at most {MAILBOX_WORDS} payload words")
+    sym = elf_symbols(elf, MAILBOX_SYMBOL).get(MAILBOX_SYMBOL)
+    if not sym:
+        raise SwdError(f"{os.path.basename(elf)} has no {MAILBOX_SYMBOL}: "
+                       "a debug build is needed")
+    base = sym[0]
+    magic, seq, ack = struct.unpack("<III", read_memory(base, 12))
+    if magic != MAILBOX_MAGIC:
+        raise SwdError(f"no mailbox at 0x{base:08x} (magic 0x{magic:08x})")
+    if seq != ack:
+        raise SwdError("the previous request was never acknowledged: "
+                       "is the main loop running?")
+    commands = [f"mww 0x{base + MB_KIND:08x} {kind}",
+                f"mwh 0x{base + MB_CMD:08x} {command_id}",
+                f"mwh 0x{base + MB_SIZE:08x} {len(words) * 2}"]
+    for i, word in enumerate(words):
+        commands.append(f"mwh 0x{base + MB_PAYLOAD + 2 * i:08x} {word & 0xFFFF}")
+    # seq last: the firmware acts as soon as seq differs from ack.
+    commands.append(f"mww 0x{base + MB_SEQ:08x} {ack + 1}")
+    openocd(*commands)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        new_ack, _, result = struct.unpack(
+            "<III", read_memory(base + MB_ACK, MB_RESULT + 4 - MB_ACK))
+        if new_ack == ack + 1:
+            return result
+        time.sleep(0.1)
+    raise SwdError(f"no acknowledge within {timeout:g} s: "
+                   "is the main loop running?")
+
+
+def scancode(name: str) -> int:
+    code = SCANCODES.get(name.lower())
+    if code is None:
+        try:
+            code = int(name, 0)
+        except ValueError:
+            raise SwdError(f"unknown key {name!r}: a scancode (0x02) or one "
+                           f"of {', '.join(sorted(SCANCODES))}") from None
+    if not 0 < code < 0x80:
+        raise SwdError(f"scancode {code:#x} is not a key")
+    return code
+
+
+def cmd_key(args: argparse.Namespace) -> int:
+    elf = matching_elf(args.elf)
+    codes = [scancode(k) for k in args.keys]
+    if args.press:
+        data = codes
+    elif args.release:
+        data = [c | 0x80 for c in codes]
+    else:
+        data = [b for c in codes for b in (c, c | 0x80)]
+    fed = mailbox_request(elf, KIND_KEY, 0, data)
+    print(f"fed {fed} IKBD byte(s): " + " ".join(f"{b:02X}" for b in data))
+    return 0 if fed == len(data) else 3
+
+
+def cmd_app(args: argparse.Namespace) -> int:
+    elf = matching_elf(args.elf)
+    name = "DEVHOOKS_APP_" + args.name.upper()
+    command_id = include_defines().get(name)
+    if command_id is None:
+        raise SwdError(f"no {name} define in rp/src/include")
+    words = [int(w, 0) for w in args.words]
+    result = mailbox_request(elf, KIND_APP, command_id, words)
+    print(f"{name}: result {result}")
+    return 0 if result else 3
+
+
 def cmd_read(args: argparse.Namespace) -> int:
     data = read_memory(int(args.address, 0), int(args.length, 0))
     with open(args.outfile, "wb") as f:
@@ -1057,6 +1167,21 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--all", action="store_true",
                     help="also print unnamed slots that are zero")
     sh.set_defaults(func=cmd_shared)
+
+    k = sub.add_parser("key", help="type on the ST's keyboard (debug builds)")
+    k.add_argument("keys", nargs="+",
+                   help="scancodes or names; each is pressed and released")
+    k.add_argument("--elf")
+    upd = k.add_mutually_exclusive_group()
+    upd.add_argument("--press", action="store_true", help="press only")
+    upd.add_argument("--release", action="store_true", help="release only")
+    k.set_defaults(func=cmd_key)
+
+    ap = sub.add_parser("app", help="send an app command (DEVHOOKS_APP_*)")
+    ap.add_argument("name")
+    ap.add_argument("words", nargs="*", help="16-bit payload words")
+    ap.add_argument("--elf")
+    ap.set_defaults(func=cmd_app)
 
     hp = sub.add_parser("heap", help="heap size, peak and free space")
     hp.add_argument("--elf")
