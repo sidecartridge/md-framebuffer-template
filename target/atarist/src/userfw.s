@@ -263,6 +263,43 @@ FB_ROW_BYTES          equ 160                 ; 320 px * 4 bpp / 8
 ACIA_KBD_STATUS       equ $FFFFFC00
 ACIA_KBD_DATA         equ $FFFFFC02
 
+; IKBD commands. While userfw runs the stream must be keyboard scancodes
+; only: a mouse packet ($F8-$FB dx dy) or a joystick event ($FE/$FF state)
+; has its header dropped by the RP's demux and its payload decoded as keys,
+; so a nudge of the mouse (dx = +1 is $01) reads as an ESC press.
+;
+; For a while after a reset the IKBD undoes a mouse-off command, and TOS
+; resets it moments before this cartridge code runs: on a cold boot the $12
+; was sometimes lost and the mouse stayed on (seen on a Mega ST). So userfw
+; resets the IKBD itself, waits for the reset's answer ($F0, $F1 on a later
+; IKBD release), throws it away, lets IKBD_SETTLE_ITERS pass and only then
+; turns the mouse and joysticks off. On the way out, TOS gets back what it
+; set up: joystick events, then the relative mouse. The order matters: $14
+; also turns the mouse off.
+IKBD_CMD_RESET_HDR    equ $80    ; reset command header (followed by $01)
+IKBD_CMD_RESET_RUN    equ $01    ; reset + self-test; answers $F0 (or $F1)
+IKBD_CMD_MOUSE_REL    equ $08    ; relative mouse reporting (TOS's mode)
+IKBD_CMD_MOUSE_OFF    equ $12    ; disable mouse reporting
+IKBD_CMD_JOY_EVENTS   equ $14    ; joystick event reporting (TOS's mode)
+IKBD_CMD_JOY_OFF      equ $1A    ; disable joysticks
+
+; Waiting for the reset's answer: one pass of the wait loop is about 44
+; cycles, so 400,000 passes are 0.55 s at 32 MHz and 2.2 s at 8 MHz. The
+; IKBD answers after its self-test (about 60 ms); the timeout only matters
+; when nothing answers (no keyboard). The settle delay after the answer
+; (2 x 18 cycles per pass) is 20 ms at 32 MHz, 80 ms at 8 MHz.
+IKBD_RESET_TIMEOUT    equ 400000
+IKBD_SETTLE_ITERS     equ 36000
+
+; Send one command byte to the IKBD once the ACIA can take it (status bit 1,
+; TX-empty). \1: the byte.
+IKBD_SEND             macro
+.\@wait:
+    btst    #1, ACIA_KBD_STATUS.w
+    beq.s   .\@wait
+    move.b  #\1, ACIA_KBD_DATA.w
+                      endm
+
 ; MC68901 MFP registers (subset we manipulate).
 MFP_IERA              equ $FFFFFA07          ; interrupt enable A (Timer-A = bit 5)
 MFP_IERB              equ $FFFFFA09          ; interrupt enable B
@@ -411,6 +448,32 @@ userfw:
     clr.b   MFP_IERB.w
     clr.b   MFP_IMRA.w
     clr.b   MFP_IMRB.w
+
+    ; Keyboard scancodes only from here on (see IKBD_CMD_MOUSE_OFF): reset
+    ; the IKBD, wait for its answer, let it settle, then mouse and joysticks
+    ; off. Interrupts are masked, so nothing else reads the ACIA meanwhile;
+    ; every byte that arrives before the answer (a mouse packet in flight,
+    ; a key) is read and dropped.
+    IKBD_SEND IKBD_CMD_RESET_HDR
+    IKBD_SEND IKBD_CMD_RESET_RUN
+    move.l  #IKBD_RESET_TIMEOUT, d0
+.ikbd_reset_wait:
+    btst    #0, ACIA_KBD_STATUS.w         ; a byte waiting?
+    beq.s   .ikbd_reset_next
+    move.b  ACIA_KBD_DATA.w, d1           ; read it (clears RX-ready)
+    andi.b  #$FE, d1
+    cmpi.b  #$F0, d1                      ; the answer: $F0 or $F1
+    beq.s   .ikbd_reset_answered
+.ikbd_reset_next:
+    subq.l  #1, d0
+    bne.s   .ikbd_reset_wait
+.ikbd_reset_answered:
+    move.l  #IKBD_SETTLE_ITERS, d0
+.ikbd_settle:
+    subq.l  #1, d0
+    bne.s   .ikbd_settle
+    IKBD_SEND IKBD_CMD_MOUSE_OFF
+    IKBD_SEND IKBD_CMD_JOY_OFF
 
     ; --- YM2149 init: ch A + ch B as Ghostbusters dual-channel DAC
     ; Enable tones on BOTH ch A and ch B (mixer bits 0,1 = 0). Tone
@@ -614,6 +677,10 @@ userfw:
 
     ; Restore TOS's VBL vector ($70 save from UFW_VBL_VEC_SAVE).
     move.l  UFW_VBL_VEC_SAVE, VBL_VECTOR.w
+
+    ; Give TOS its mouse and joysticks back (see IKBD_CMD_MOUSE_OFF).
+    IKBD_SEND IKBD_CMD_JOY_EVENTS
+    IKBD_SEND IKBD_CMD_MOUSE_REL
 
     ; Restore SR to TOS's usual IPL=3 (matches md-oric main.s:230).
     ; From here on TOS handles HBL / Timer / ACIA again -- IKBD will
