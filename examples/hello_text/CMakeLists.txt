@@ -35,11 +35,9 @@ set(PICO_BOARD ${BOARD_TYPE})
 
 # Determine board type macros
 if("${BOARD_TYPE}" STREQUAL "pico_w")
-    add_compile_definitions(BOARD_TYPE_PICO_W=1 BOARD_TYPE_PICO=0 BOARD_TYPE_CUSTOM16MB=0)
+    add_compile_definitions(BOARD_TYPE_PICO_W=1 BOARD_TYPE_PICO=0)
 elseif("${BOARD_TYPE}" STREQUAL "pico")
-    add_compile_definitions(BOARD_TYPE_PICO_W=0 BOARD_TYPE_PICO=1 BOARD_TYPE_CUSTOM16MB=0)
-elseif("${BOARD_TYPE}" STREQUAL "sidecartos_16mb")
-    add_compile_definitions(BOARD_TYPE_PICO_W=0 BOARD_TYPE_PICO=1 BOARD_TYPE_CUSTOM16MB=0)
+    add_compile_definitions(BOARD_TYPE_PICO_W=0 BOARD_TYPE_PICO=1)
 else()
     message(FATAL_ERROR "Unknown BOARD_TYPE: ${BOARD_TYPE}")
 endif()
