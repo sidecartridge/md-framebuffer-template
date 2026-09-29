@@ -26,6 +26,7 @@
 #include "commemul.h"
 #include "debug.h"
 #include "demo.h"
+#include "devhooks.h"
 #include "fb.h"
 #include "ff.h"
 #include "ikbd.h"
@@ -161,6 +162,8 @@ void emul_start() {
   // screen). The first dispatcher render paints the boot menu over
   // whatever fb_init left in the framebuffer.
   demo_dispatcher_init();
+  // Debug builds: host commands over SWD (devhooks.h, tools/dev/swd.py).
+  devhooks_setAppHandler(demo_dispatcher_devhook);
 
   // Main loop:
   //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
@@ -176,6 +179,7 @@ void emul_start() {
   DPRINTF("Entering main loop\n");
   while (true) {
     fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
+    devhooks_poll(); /* debug builds: keys and commands from the host */
     ikbd_pump();
     select_poll();
 

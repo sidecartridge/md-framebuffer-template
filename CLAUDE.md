@@ -79,7 +79,9 @@ Build flow (orchestrated by `build.sh`):
 - `upload_s3.sh <file>` is a manual one-off uploader; needs `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`.
 
 ### Tests
-There is no test suite. "Verification" is: build succeeds, UF2 boots on hardware, manual interaction over the serial debug console (debug builds only, at 921,600 baud; release builds have no console).
+There is no unit test suite. Verification is on hardware: the build succeeds, the UF2 boots, and the app behaves on the ST.
+
+**With the Debug Probe attached** (SWD and the debug UART), `tools/dev/` does most of that from the host; `tools/dev/README.md` has the details. `flash.sh <debug|release>` builds out of tree, flashes and checks over SWD that the RP runs that build. `console.py watch` captures the debug console (921,600 baud; release builds have none) into `tools/dev/logs/console.log`. `swd.py` reads the running RP without its help: `counters` (frames published, blits acknowledged, IKBD and ring overruns, per second with `--watch`), `heap`, `shared`, `fb` (the framebuffer as the ST shows it, as a PNG), `crash`, `postmortem`, `select`, `reset`. In debug builds `key` and `app` drive the app through the devhooks mailbox (`rp/src/include/devhooks.h`): keystrokes as from the ST, and the demo dispatcher's `demo N`, `menu`, `overlay`, `slow_frame`. `tools_harness.py --build --flash --reset` checks all of it against the device. Flashing stops the cartridge bus, so reset the ST afterwards; never use OpenOCD's own `reset` or `program` (core 1 is the c2p worker and must start with core 0).
 
 ## Architecture
 

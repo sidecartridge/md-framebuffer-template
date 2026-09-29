@@ -20,6 +20,7 @@
 #include "audio_sample.h"
 #include "commemul.h"
 #include "debug.h"
+#include "devhooks.h"
 #include "fb.h"
 #include "fb_chunked.h"
 #include "fb_font.h"
@@ -101,6 +102,7 @@ void emul_start() {
   DPRINTF("Entering main loop\n");
   while (true) {
     fb_pump_rom3(); /* ROM3 ring -> IKBD demux + VBL frame-sync */
+    devhooks_poll(); /* debug builds: keys from the host over SWD */
     ikbd_pump();
     select_poll();
 
