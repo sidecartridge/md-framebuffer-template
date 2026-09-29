@@ -25,19 +25,16 @@
 ;      match, restore vectors / MFP / VBL / screen base and rts back
 ;      to the cartridge dispatcher.
 ;
-; IRQ ownership: TOS's HBL ($68), Timer-A/B/C/D
-; ($134/$120/$114/$110), and ACIA ($118) handlers are stubbed to
-; single-rte dummies and their MFP IERA/IERB bits are cleared so no
-; MFP source can fire. Only the custom VBL handler at $70 stays
-; active.
+; IRQ ownership: TOS's HBL ($68), Timer-A/C/D ($134/$114/$110)
+; handlers are stubbed to single-rte dummies and their MFP IERA/IERB
+; bits are cleared so they cannot fire. The custom VBL handler at $70,
+; Timer-B ($120, audio) and the keyboard ACIA ($118) stay active.
 ;
-; IKBD bytes are forwarded inline from FBDRV_INLINE. The MOVEM-burst
-; framebuffer copy emits an IKBD poll block every FBDRV_IKBD_POLL_EVERY
-; iters (~20 HBLs / 1.24 ms): btst the ACIA RX-ready bit, and if set,
-; read the byte and emit it via a cart-bus read at IKBD_WINDOW_BASE +
-; byte ($FB8200..$FB82FF, md-devops single-byte ABI). The RP captures
-; the read via the commemul PIO+DMA ring (no per-read CPU overhead)
-; and runs the IKBD demux from its main loop.
+; IKBD bytes are forwarded by the keyboard ACIA's receive interrupt
+; (userfw_acia_irq, MFP GPIP4): each byte as it arrives, emitted via a
+; cart-bus read at IKBD_WINDOW_BASE + byte ($FB8200..$FB82FF). The RP
+; captures the read via the commemul PIO+DMA ring (no per-read CPU
+; overhead) and runs the IKBD demux from its main loop.
 ;
 ; --- Constants ----------------------------------------------------
 
@@ -98,7 +95,6 @@ UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page addre
 ; 200*160/48=666r32. For values that don't divide evenly the trailing
 ; bytes are simply not copied (they remain stale on the screen page).
 FBDRV_ITER_BYTES      equ 48                            ; 12 longwords: D0-D7 + A1-A4 (A6=src, A5=dst, A0=dedicated audio pointer, A7=SP preserved -- IRQs may fire during the macro).
-FBDRV_IKBD_POLL_EVERY equ 40                            ; insert inline IKBD poll every Nth MOVEM iter. 40 iters * ~31us = ~1.24ms (~20 HBLs).
 FBDRV_TOTAL_BYTES     equ (FB_COPY_LINES * FB_ROW_BYTES) ; honours FB_COPY_LINES
 FBDRV_MAIN_ITERS      equ (FBDRV_TOTAL_BYTES / FBDRV_ITER_BYTES)
 FBDRV_MAIN_BYTES      equ (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)
@@ -118,8 +114,9 @@ FBDRV_TAIL_DISP       equ FBDRV_MAIN_BYTES                        ; tail goes at
 ;   - A0: dedicated to the Timer-B audio handler's read pointer.
 ;     With A0 stable across the macro, the IRQ handler doesn't have
 ;     to save/restore it (-24 cyc/IRQ * ~125 IRQ/VBL = ~3000 cyc/VBL).
-;     The inline IKBD poll uses A1 (which IS in the MOVEM list and
-;     gets reloaded each iter) so it never disturbs A0.
+;
+; An IRQ can fire between a MOVEM load and its store, while D0-D7 and
+; A1-A4 hold pixels: every handler saves what it uses (A0 aside).
 ;
 ; Predec mode is 4 cyc faster per iter than d16(a5) displacement
 ; (8+8n vs 12+8n on 68000). The catch: predec writes each 52-byte
@@ -144,29 +141,13 @@ FBDRV_TAIL_DISP       equ FBDRV_MAIN_BYTES                        ; tail goes at
 ; = original page START, which is the value .after_copy expects in A5.
 ;
 ; Code size: 8 B per unrolled iteration * FBDRV_MAIN_ITERS (615)
-; + 6 B setup = ~5 KB inline. Plus IKBD poll blocks every 40 iters
-; and the small d16(a5) tail MOVEM at the end.
+; + 6 B setup = ~5 KB inline, plus the small d16(a5) tail MOVEM at
+; the end.
 FBDRV_INLINE          macro
     movea.l #UFW_FB_SRC, a6
-FBDRV_POLL_CTR        set 0
     rept    FBDRV_MAIN_ITERS
     movem.l (a6)+, d0-d7/a1-a4
     movem.l d0-d7/a1-a4, -(a5)
-FBDRV_POLL_CTR        set FBDRV_POLL_CTR + 1
-    ifeq    FBDRV_POLL_CTR - FBDRV_IKBD_POLL_EVERY
-FBDRV_POLL_CTR        set 0
-    ; Inline IKBD poll. Clobbers D0/A1 -- safe because the next
-    ; MOVEM iter reloads D0-D7/A1-A4 from cart, and the .after_copy
-    ; code after the macro overwrites D0 with UFW_SCREEN_PAGE before
-    ; using it. A0 is intentionally NOT touched here -- it holds the
-    ; dedicated audio buffer pointer for the Timer-B IRQ handler.
-    btst    #0, ACIA_KBD_STATUS.w
-    beq.s   *+18                          ; skip the 16-byte body if no data
-    moveq   #0, d0                        ; pre-zero D0 so move.b yields a clean 0..255 word
-    lea     IKBD_WINDOW_BASE, a1
-    move.b  ACIA_KBD_DATA.w, d0
-    tst.b   (a1, d0.w)                    ; emit byte via cart-bus read
-    endc
     endr
     ;
     ; Tail: copy the last FBDRV_TAIL_BYTES bytes of the blitted
@@ -335,12 +316,29 @@ VEC_ACIA              equ $118
 VEC_TIMERB            equ $120
 VEC_TIMERA            equ $134
 
-; IKBD cart-bus emit window (ROM3). The inline IKBD poll
-; in FBDRV_INLINE reads (IKBD_WINDOW_BASE + byte).b to forward `byte`
+; IKBD cart-bus emit window (ROM3). The ACIA interrupt
+; (userfw_acia_irq) reads (IKBD_WINDOW_BASE + byte).b to forward `byte`
 ; to RP; the RP side filters commemul ring samples whose low 16 bits
 ; fall in [$8200, $8300) and extracts the IKBD byte from the low 8
 ; bits.
 IKBD_WINDOW_BASE      equ $FB8200
+
+; The keyboard ACIA's receive interrupt reads every IKBD byte as it
+; arrives (userfw_acia_irq). The 6850 holds one byte and the IKBD sends
+; one every 1.28 ms: polling from the blit left gaps longer than that
+; (between blits, and when audio interrupts stretched the poll interval),
+; and a second byte overran the first -- md-oric measured overruns and a
+; stuck key the same way. When the ACIA reports an overrun (status bit 5)
+; the handler also reads IKBD_OVERRUN_ADDR, which the RP counts.
+; The MIDI ACIA shares the GPIP4 line: its receive interrupt is turned
+; off while userfw runs, or a MIDI byte nobody reads would hold the line
+; down and stop the keyboard.
+IKBD_OVERRUN_ADDR     equ $FB8500
+ACIA_MIDI_CTRL        equ $FFFFFC04
+ACIA_KBD_CTRL_TOS     equ $96        ; RX interrupt on, 8N1, /64 (TOS's setting)
+ACIA_MIDI_CTRL_OFF    equ $15        ; RX interrupt off, 8N1, /16
+ACIA_MIDI_CTRL_TOS    equ $95        ; RX interrupt on, 8N1, /16 (TOS's setting)
+MFP_GPIP4_BIT         equ 6          ; IERB / IMRB bit of the ACIA interrupt
 
 ; VBL frame-sync ack. After each blit completes (.after_copy)
 ; the m68k does a single dummy cart-bus read at VBLSYNC_ADDR to tell
@@ -531,6 +529,15 @@ userfw:
     bne.s   .ikbd_settle
     IKBD_SEND IKBD_CMD_MOUSE_OFF
     IKBD_SEND IKBD_CMD_JOY_OFF
+
+    ; Keyboard bytes by interrupt from here on (see IKBD_OVERRUN_ADDR).
+    ; SR is still IPL 7, so nothing fires until the loop starts.
+    lea     userfw_acia_irq(pc), a1
+    move.l  a1, VEC_ACIA.w
+    move.b  #ACIA_KBD_CTRL_TOS, ACIA_KBD_STATUS.w
+    move.b  #ACIA_MIDI_CTRL_OFF, ACIA_MIDI_CTRL.w
+    bset    #MFP_GPIP4_BIT, MFP_IERB.w
+    bset    #MFP_GPIP4_BIT, MFP_IMRB.w
 
     ; --- YM2149 init: ch A + ch B as Ghostbusters dual-channel DAC
     ; Enable tones on BOTH ch A and ch B (mixer bits 0,1 = 0). Tone
@@ -738,6 +745,7 @@ userfw:
     ; Give TOS its mouse and joysticks back (see IKBD_CMD_MOUSE_OFF).
     IKBD_SEND IKBD_CMD_JOY_EVENTS
     IKBD_SEND IKBD_CMD_MOUSE_REL
+    move.b  #ACIA_MIDI_CTRL_TOS, ACIA_MIDI_CTRL.w
 
     ; Restore SR to TOS's usual IPL=3 (matches md-oric main.s:230).
     ; From here on TOS handles HBL / Timer / ACIA again -- IKBD will
@@ -761,16 +769,15 @@ userfw:
 ;      explicit `cmpa.l + bcs.s` wrap in the Timer-B hot path, so
 ;      that handler shrinks to a single `move.b (a0)+, YM_DATA.w`
 ;      + rte. A0 is dedicated to audio (excluded from the
-;      FBDRV_INLINE MOVEM list and from the IKBD poll), so it's
+;      FBDRV_INLINE MOVEM list and from the ACIA handler), so it's
 ;      safe to overwrite here from IRQ context.
 ;   2. Clear UFW_VBL_FLAG so .vbl_loop's `stop`-then-check wait can
 ;      distinguish a VBL wake from a Timer-B (or other MFP) wake.
 ;
 ; This replaces TOS's VBL handler entirely while userfw is running,
 ; so mouse / cursor-blink / keyboard-repeat / _vblqueue all stop
-; firing. The ACIA IRQ ($118) is stubbed too, so GEMDOS's keyboard
-; buffer is no longer filled; ESC detection runs through the inline
-; IKBD poll in FBDRV_INLINE.
+; firing. The ACIA IRQ ($118) is userfw's own (userfw_acia_irq), so
+; GEMDOS's keyboard buffer is no longer filled; the keys go to the RP.
 userfw_vbl:
     movea.l #AUDIO_BUFFER_ADDR, a0
     clr.w   UFW_VBL_FLAG.w
@@ -813,9 +820,37 @@ userfw_timerb_audio:
     rte
 
 ; -------------------------------------------------------------------
+; userfw_acia_irq -- keyboard ACIA receive interrupt (MFP GPIP4, $118).
+; Forwards every byte the ACIA holds, one cart-bus read each, and only
+; then returns: the MFP sees an edge only when the ACIA's IRQ line goes
+; down, so a byte left behind would never interrupt again. Each pass
+; takes several microseconds (the ACIA sits on the slow E-clock bus), so
+; RX-ready has cleared before it is tested again. It can fire between a
+; MOVEM load and its store in FBDRV_INLINE: it saves D0 and A1 and never
+; touches A0 (the audio cursor). Auto-EOI: no in-service bit to clear.
+userfw_acia_irq:
+    movem.l d0/a1, -(sp)
+    lea     IKBD_WINDOW_BASE, a1
+.acia_next:
+    move.b  ACIA_KBD_STATUS.w, d0
+    btst    #0, d0                        ; a byte waiting?
+    beq.s   .acia_done
+    btst    #5, d0                        ; overrun: bytes were lost before it
+    beq.s   .acia_read
+    tst.b   IKBD_OVERRUN_ADDR
+.acia_read:
+    moveq   #0, d0
+    move.b  ACIA_KBD_DATA.w, d0           ; clears RX-ready and the overrun
+    tst.b   (a1, d0.w)                    ; forward it
+    bra.s   .acia_next
+.acia_done:
+    movem.l (sp)+, d0/a1
+    rte
+
+; -------------------------------------------------------------------
 ; userfw_dummy_irq -- single-rte IRQ handler for vectors we want to
-; silence (HBL $68, Timer-A $134, Timer-C $114, Timer-D $110, ACIA
-; $118). Stopping TOS's handlers cuts the per-frame jitter they
+; silence (HBL $68, Timer-A $134, Timer-C $114, Timer-D $110; ACIA
+; $118 and Timer-B $120 too, until their own handlers go in). Stopping TOS's handlers cuts the per-frame jitter they
 ; impose on the blit; we don't need their behaviour because the
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:

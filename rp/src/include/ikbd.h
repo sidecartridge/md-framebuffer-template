@@ -2,8 +2,9 @@
  * File: ikbd.h
  * Description: IKBD keyboard ingest + demux (keyboard-only).
  *
- * The m68k Timer-B IKBD handler (target/atarist/src/userfw.s) reads
- * the keyboard ACIA at $FFFFFC00/02 and forwards every received byte
+ * The m68k keyboard ACIA interrupt (userfw_acia_irq in
+ * target/atarist/src/userfw.s) reads the keyboard ACIA at
+ * $FFFFFC00/02 and forwards every received byte
  * to the RP via a single cart-bus read at IKBD_WINDOW_BASE + byte in
  * the ROM3 region ($FB8200..$FB82FF, md-devops single-byte ABI).
  *
@@ -70,6 +71,11 @@ size_t ikbd_ring_count(void);
 /* Cumulative count of raw bytes the producer couldn't push because
  * the ring was full. Should stay 0 in steady state. */
 uint32_t ikbd_ring_dropped(void);
+
+/* Times the ST's keyboard ACIA reported an overrun (IKBD bytes lost
+ * before they could be read), signalled at CART_ROM3_IKBD_OVERRUN_WINDOW.
+ * Should stay 0; debug builds print each one. */
+uint32_t ikbd_overruns(void);
 
 /* Key press / release event. `scancode` is the IKBD scancode with
  * bit 7 stripped (0..127). `is_press` is true for make, false for

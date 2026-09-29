@@ -49,6 +49,10 @@ static volatile uint8_t  s_head = 0;
 static volatile uint8_t  s_tail = 0;
 static volatile uint32_t s_dropped = 0;
 
+/* ACIA overruns the ST reported; readable over SWD by symbol. */
+volatile uint32_t ikbdOverruns = 0;
+static uint32_t s_overruns_reported = 0;
+
 /* Decoded key event ring. 16 entries; main-loop producer/consumer
  * (no IRQ-safety needed). */
 #define IKBD_KEY_RING_SIZE 16u
@@ -69,6 +73,10 @@ static uint32_t s_esc_press_us = 0;
 static bool s_esc_auto_exit = true;
 
 void __not_in_flash_func(ikbd_consume_rom3_sample)(uint16_t addr_lsb) {
+  if ((addr_lsb & CART_ROM3_WINDOW_MASK) == CART_ROM3_IKBD_OVERRUN_WINDOW) {
+    ikbdOverruns++;
+    return;
+  }
   if ((addr_lsb & IKBD_WINDOW_MASK) == IKBD_WINDOW_LO16) {
     uint8_t byte = (uint8_t)(addr_lsb & 0xFFu);
     uint8_t next_head = (uint8_t)((s_head + 1u) & IKBD_RING_MASK);
@@ -102,6 +110,8 @@ size_t ikbd_ring_count(void) {
 }
 
 uint32_t ikbd_ring_dropped(void) { return s_dropped; }
+
+uint32_t ikbd_overruns(void) { return ikbdOverruns; }
 
 /* Pop one byte from the raw ring. Returns false if empty. Internal
  * helper for ikbd_pump. */
@@ -150,6 +160,11 @@ static void push_key(uint8_t scancode, bool is_press) {
 
 void ikbd_pump(void) {
   uint8_t b;
+  if (ikbdOverruns != s_overruns_reported) {
+    s_overruns_reported = ikbdOverruns;
+    DPRINTF("IKBD: ACIA overrun #%lu, bytes were lost\n",
+            (unsigned long)s_overruns_reported);
+  }
   while (raw_pop(&b)) {
     if (b < 0x80u) {
       push_key(b, true);

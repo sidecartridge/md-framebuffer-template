@@ -174,10 +174,12 @@
  *
  *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
  *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
+ *   $FB8500  the keyboard ACIA overran: IKBD bytes were lost (ikbd.c)
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
  *   $FB8Axx  TOS version, low byte; sent just before the hello */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
+#define CART_ROM3_IKBD_OVERRUN_WINDOW 0x8500u
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u
