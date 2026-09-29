@@ -71,12 +71,11 @@
 #define CART_PALETTE_ENTRIES             16
 #define CART_PALETTE_SIZE                (CART_PALETTE_ENTRIES * 2)  /* 32 B */
 
-/* Audio sample buffer. Single-channel YM2149 ch A 4-bit DAC: each
- * byte holds a YM volume nibble (0..15) in its low 4 bits. The m68k
- * Timer-B IRQ handler fires at ~6.27 kHz and reads one byte per
- * fire, wrapping the read pointer at CART_AUDIO_BUFFER_SIZE. The
- * RP-side audio.c fills the buffer with samples mapped through a
- * logarithmic LUT (linear PCM -> closest matching YM volume). */
+/* Audio sample buffer: (vA, vB) YM2149 volume pairs, two bytes per
+ * sample for channels A and B. The m68k Timer-B IRQ handler fires at
+ * ~5,585 Hz and reads one pair per fire; its VBL handler points the read
+ * cursor back at the start every VBL, so a frame reads the first ~224
+ * bytes. The RP-side audio.c refills them once per VBL. */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 #define CART_AUDIO_BUFFER_SIZE           1024

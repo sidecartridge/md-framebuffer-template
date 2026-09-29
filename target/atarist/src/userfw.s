@@ -9,10 +9,10 @@
 ;      main loop by clearing a flag in ST RAM. We DON'T use XBIOS
 ;      Vsync (trap #14, #37) -- that trips through TOS's GEMDOS-aware
 ;      dispatch and adds latency / jitter.
-;   2. Read FB_FRAME_COUNTER_ADDR ($FA400C). The RP increments this
-;      after every fb_render_frame() with a memory barrier. If
-;      unchanged since last iteration (D4), the FB has nothing new
-;      and we skip the blit + flip entirely.
+;   2. Read the low word of FB_FRAME_COUNTER ($FA400C), which the RP
+;      bumps as the last write of every publish. If it has not moved
+;      since the last blit (UFW_LAST_FRAME), there is nothing new: skip
+;      the blit, the flip and the ack (see FB_FRAME_COUNTER).
 ;   3. Copy the 32 KB cart framebuffer ($FA8300) into the hidden
 ;      ST screen page selected by A4. The copy is a pure 68000 CPU
 ;      MOVEM burst expanded inline via FBDRV_INLINE -- same code on
@@ -65,23 +65,24 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 ; 1 when measuring.
 FBDRV_DEBUG_MARKS     equ 0
 
-; Scratch word in TOS's _dskbufp ($4C6..$4C9). userfw does no disk
-; I/O, so the slot is fair game while userfw owns the machine.
-; .vbl_loop arms this to -1 then `stop`s; userfw_vbl clears it. The
-; m68k re-stops on any non-VBL IRQ (Timer-B etc.) and only exits the
-; wait when the VBL handler has cleared the flag.
-UFW_VBL_FLAG          equ $4C6               ; word: cleared by userfw_vbl, polled after each `stop`
-
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
 ; includes A7 in its register list; the current-page pointer
 ; UFW_SCREEN_PAGE and the saved TOS VBL vector / Physbase result
-; also live here. 16 bytes used; SCREEN_A's tail at $77D00 has 768
+; also live here. 20 bytes used; SCREEN_A's tail at $77D00 has 768
 ; bytes available (shifter only reads 200*160 = 32000 B of each
 ; screen page, allocation is 32 KB).
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
+; Low word of FB_FRAME_COUNTER at the last blit: .vbl_loop blits only when
+; the counter has moved on since (see FB_FRAME_COUNTER).
+UFW_LAST_FRAME        equ $00077FF0          ; word
+; .vbl_loop arms this to -1 then `stop`s; userfw_vbl clears it. The
+; m68k re-stops on any non-VBL IRQ (Timer-B etc.) and only exits the
+; wait when the VBL handler has cleared the flag. It used to borrow
+; TOS's _dskbufp ($4C6); it lives in userfw's own state area now.
+UFW_VBL_FLAG          equ $00077FF2          ; word: cleared by userfw_vbl, polled after each `stop`
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -179,10 +180,16 @@ FBDRV_INLINE          macro
 ; framebuffer template because we own the screen until ESC exit.
 VBL_VECTOR            equ $70
 
-; FB dirty-frame counter (lives in cart shared region at $FA400C). The
-; RP fills the framebuffer and then writes a new value here as the
-; LAST step of the frame. If this matches D4 (last seen) we skip the
-; cart->ST blit + video flip entirely.
+; FB frame counter (cart shared region, $FA400C). The RP publishes a
+; whole frame into the cart framebuffer and then bumps this counter as
+; its LAST write. .vbl_loop blits only when the counter's low word has
+; changed since the last blit (UFW_LAST_FRAME), and acknowledges only
+; after a blit (VBLSYNC_ADDR). The RP starts the next publish only after
+; that acknowledgement, so the two never overlap: the ST reads nothing
+; between an acknowledgement and the next counter change, and a changed
+; counter means the frame is complete. A slow app gets fewer frames,
+; never a torn one. The low word is read with one move.w: a longword is
+; two bus reads with its halves swapped and could mix old and new.
 FB_FRAME_COUNTER      equ $00FA400C
 
 ; RP→m68k command sentinel at $FA4000. The RP IKBD demux writes
@@ -224,8 +231,9 @@ YM_MIXER_DAC_AB       equ $FC                ; tones A AND B enabled, tone C off
 
 ; Cart-shared audio sample buffer (mirrors AUDIO_BUFFER_ADDR /
 ; AUDIO_BUFFER_SIZE in main.s and CART_AUDIO_BUFFER_OFFSET in
-; rp/src/include/cart_shared.h). 256 bytes of YM ch A volume
-; nibbles, filled by the RP and read by the Timer-B handler.
+; rp/src/include/cart_shared.h). (vA, vB) YM volume pairs, one pair
+; per Timer-B fire; the VBL handler points A0 back at the start every
+; VBL, so a frame reads its first ~224 bytes. Filled by the RP.
 AUDIO_BUFFER_ADDR     equ $00FA4100
 AUDIO_BUFFER_SIZE     equ 1024
 AUDIO_BUFFER_END      equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)
@@ -567,7 +575,7 @@ userfw:
     move.b  #YM_REG_CHA_VOL, YM_SELECT.w  ; latch reg 8 (next YM_DATA writes hit ch A volume)
     move.b  #0, YM_DATA.w                 ; ch A vol = 0 (silence)
 
-    ; --- Timer-B setup (audio @ ~6.27 kHz, STE-low-like) ---------
+    ; --- Timer-B setup (audio @ ~5,585 Hz) -----------------------
     ; Install our handler at $120 (overrides the dummy installed
     ; above). Load count -> TBDR, then prescaler -> TBCR starts
     ; the countdown. Enable + unmask Timer-B at the MFP. SR is
@@ -606,6 +614,10 @@ userfw:
     ; UFW_SCREEN_A and UFW_SCREEN_B via XOR with UFW_SCREEN_XOR.
     move.l  #UFW_SCREEN_A, UFW_SCREEN_PAGE
 
+    ; The frame now in the cart framebuffer counts as seen: the first blit
+    ; waits for the RP's next publish (see FB_FRAME_COUNTER).
+    move.w  FB_FRAME_COUNTER, UFW_LAST_FRAME
+
     ; Shifter base HIGH byte ($07) is the same for both screen pages
     ; ($70000 and $78000), so we write it ONCE here and only update
     ; the MID byte per VBL in .after_copy below (saves ~20 cyc/VBL).
@@ -627,10 +639,10 @@ userfw:
     ; handler clears UFW_VBL_FLAG, but the dummy MFP handlers do
     ; not. After each wake we check the flag; if it's still set the
     ; wake came from a non-VBL IRQ and we `stop` again.
-    move.w  #-1, UFW_VBL_FLAG.w
+    move.w  #-1, UFW_VBL_FLAG
 .wait_vbl:
     stop    #$2300
-    tst.w   UFW_VBL_FLAG.w
+    tst.w   UFW_VBL_FLAG
     bne.s   .wait_vbl
 
     ifne    FBDRV_DEBUG_MARKS
@@ -647,6 +659,13 @@ userfw:
     lea     PALETTE_ADDR, a5
     movem.l (a5), d0-d7
     movem.l d0-d7, PALETTE_BASE.w
+
+    ; Blit only a frame the RP has finished publishing, and only once
+    ; (see FB_FRAME_COUNTER). Nothing new: no blit, no flip, no ack.
+    move.w  FB_FRAME_COUNTER, d0
+    cmp.w   UFW_LAST_FRAME, d0
+    beq     .input_check
+    move.w  d0, UFW_LAST_FRAME
 
     ; A5 = END of the screen page chunk-covered region. FBDRV_INLINE
     ; uses predec MOVEM (`movem.l list, -(a5)`) and walks A5 backwards
@@ -780,12 +799,12 @@ userfw:
 ; GEMDOS's keyboard buffer is no longer filled; the keys go to the RP.
 userfw_vbl:
     movea.l #AUDIO_BUFFER_ADDR, a0
-    clr.w   UFW_VBL_FLAG.w
+    clr.w   UFW_VBL_FLAG
     rte
 
 ; -------------------------------------------------------------------
-; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~12.5 kHz
-; when Timer-B is running in /4 delay mode with TBDR=49.
+; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~5,585 Hz
+; (Timer-B in /4 delay mode, TBDR = TIMERB_COUNT = 110).
 ;
 ; Dual-channel Ghostbusters-LUT mode: each sample in the cart buffer
 ; is 2 bytes = (vA, vB), pre-resolved at build time by running the
@@ -809,9 +828,8 @@ userfw_vbl:
 ;   move.b  #YM_REG_CHA_VOL, YM_SELECT.w   ; 12 cyc -- re-latch reg 8
 ;   rte                                    ; 20 cyc
 ;   ---                                    ; 68 cyc/IRQ
-; At 12,539 Hz: 68 * 251 = ~17.1 k cyc/VBL = 2.1 ms = 10.7% CPU.
-; Combined with FB_COPY_LINES=100 macro (~8.8 ms / VBL = 44%),
-; total VBL load ~55%, leaving ~9.1 ms slack.
+; Plus ~44 cyc of IRQ entry and exit: ~112 cyc per fire, 112 fires
+; per PAL VBL = ~12.5 k cyc = ~1.6 ms = ~8% of the frame.
 userfw_timerb_audio:
     move.b  (a0)+, YM_DATA.w               ; vA -> ch A vol
     move.b  #YM_REG_CHB_VOL, YM_SELECT.w   ; latch ch B vol reg
