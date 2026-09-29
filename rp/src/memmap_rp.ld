@@ -295,8 +295,12 @@ SECTIONS
 
 
 
-    /* stack limit is poorly named, but historically is maximum heap ptr */
-    __StackLimit = ORIGIN(RAM) + LENGTH(RAM) + LENGTH(ROM_IN_RAM);
+    /* stack limit is poorly named, but historically is maximum heap ptr.
+     * The heap stops where RAM ends: ROM_IN_RAM right above it is the
+     * cartridge window the ST reads, and a heap allowed to grow into it hands
+     * out addresses inside the image. The SDK's sbrk refuses to go past this
+     * symbol, so malloc returns NULL instead. */
+    __StackLimit = ORIGIN(RAM) + LENGTH(RAM);
     __StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X);
     __StackTop = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     __StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy);

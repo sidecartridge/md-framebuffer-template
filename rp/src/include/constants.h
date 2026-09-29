@@ -82,7 +82,11 @@ extern unsigned int _booster_app_flash_start;
 extern unsigned int _config_flash_start;
 extern unsigned int _global_lookup_flash_start;
 extern unsigned int _global_config_flash_start;
-extern unsigned int __rom_in_ram_start__;
+// The 64 KB cartridge window. An array of unknown size, not a scalar: code
+// reads and writes the whole window through this symbol, and a scalar
+// declaration tells the compiler the object is 4 bytes, which makes every
+// access past them undefined behaviour it may optimise on.
+extern unsigned int __rom_in_ram_start__[];
 // NOLINTEND(readability-identifier-naming)
 
 #endif  // CONSTANTS_H

@@ -87,7 +87,7 @@ void emul_start() {
     panic("init_romemul failed: PIO/DMA claim or program load returned <0");
   }
 
-  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring) BEFORE
+  // Bring up the ROM3 cart-bus capture (PIO + 4 KB DMA ring) BEFORE
   // fb_init: fb_init's first fb_publish() drains the ROM3 ring while it
   // waits for the m68k's VBL ack, so the ring must already exist. (At
   // boot the m68k may not be emitting acks yet; the first publish just

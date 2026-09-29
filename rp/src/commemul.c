@@ -14,7 +14,15 @@
 #include "hardware/dma.h"
 #include "hardware/pio.h"
 
-#define COMM_RING_BITS 15u
+// The ring holds what the ST reads in ROM3 while this side is not draining
+// it: one blit ack per frame (50 a second) and the IKBD bytes, one sample
+// each. The main loop drains it on every pass, and fb_publish() drains it
+// while it waits for the ack. 2^12 bytes are 2,048 samples: about 40 s of
+// acks, or 2.6 s of a mouse moved flat out (781 IKBD bytes a second). The
+// ring must be aligned to its size for the DMA's address wrap, so a larger
+// ring also wastes more RAM before it: at 32 KB the ring and its alignment
+// padding took 46 KB, and the heap was left with 9 KB.
+#define COMM_RING_BITS 12u
 #define COMM_RING_SIZE_BYTES (1ul << COMM_RING_BITS)
 #define COMM_RING_WORDS (COMM_RING_SIZE_BYTES / sizeof(uint16_t))
 #define COMM_RING_MASK (COMM_RING_WORDS - 1u)
