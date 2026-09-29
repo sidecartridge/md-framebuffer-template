@@ -612,7 +612,7 @@ The cartridge ROM3 region is no longer a data bank. It is reserved for the comma
 
 `commemul_init()` brings up:
 - A dedicated PIO state machine on `ROM3_GPIO` that waits on the ROM3 chip-select and pushes the 16-bit address onto the RX FIFO.
-- A single DMA channel running in **ring mode** (`channel_config_set_ring`) that drains the FIFO into a 32 KB / 16 384-word ring buffer perpetually (`COMM_DMA_TRANSFER_COUNT = 0xFFFFFFFF`).
+- A single DMA channel running in **ring mode** (`channel_config_set_ring`) that drains the FIFO into a 4 KB / 2 048-word ring buffer perpetually (`COMM_DMA_TRANSFER_COUNT = 0xFFFFFFFF`).
 
 There are no IRQs anywhere in this path. The application drains the ring by calling `commemul_poll(callback)`, which derives the producer index from `dma_hw->ch[ch].transfer_count` and invokes the callback for every new sample.
 

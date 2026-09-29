@@ -31,6 +31,7 @@
 #include "pico/time.h"
 #include "sidecart_logo.h"
 #include "sidecart_text.h"
+#include "st_session.h"
 
 /* Per-file -O3: the menu now runs a per-pixel rotozoom backdrop.
  * Pure compute -- no bus/PIO timing code here -- so opt it for speed. */
@@ -120,6 +121,7 @@ static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
 #define IKBD_SC_3   0x04u
 #define IKBD_SC_4   0x05u
 #define IKBD_SC_D   0x20u  /* hidden: toggle DRAW/C2P readout (menu + demos) */
+#define IKBD_SC_B   0x30u  /* B = return to Booster (menu only) */
 #define IKBD_SC_RET 0x1Cu  /* Return = launch the highlighted item */
 #define IKBD_SC_UP  0x48u  /* move selection up */
 #define IKBD_SC_DOWN 0x50u /* move selection down */
@@ -277,8 +279,11 @@ static void __not_in_flash_func(render_menu)(void) {
     font_print(items[i]);
   }
   font_set_color(0);
-  font_move(60, 144);
+  font_move(60, 140);
   font_print("UP/DN  RET=start  ESC=exit");
+  font_align(FONT_ALIGN_CENTER);
+  font_move(FB_CHUNKED_W / 2, 150);
+  font_print("B=return to Booster");
 
   /* Hidden DRAW/C2P readout (toggled with 'D'), previous frame's numbers
    * on a dark strip at the bottom. */
@@ -308,6 +313,19 @@ static void exit_to_gem(void) {
   s_state = DEMO_STATE_EXITING;
 }
 
+/* 'B': a last frame that says what happens -- the ST shows it while it
+ * waits for its cold reset -- then leave for Booster. */
+static void return_to_booster(void) {
+  fb_fill_rect(0, 0, FB_CHUNKED_W, FB_CHUNKED_H, 15);
+  font_set_font(&font8x8);
+  font_set_color(0);
+  font_align(FONT_ALIGN_CENTER);
+  font_move(FB_CHUNKED_W / 2, FB_CHUNKED_H / 2 - 4);
+  font_print("Returning to Booster...");
+  fb_publish();
+  st_session_return_to_booster();
+}
+
 void demo_dispatcher_init(void) {
   s_state = DEMO_STATE_MENU;
   s_active = NULL;
@@ -316,6 +334,17 @@ void demo_dispatcher_init(void) {
    * to exit to GEM only from the menu. */
   ikbd_set_esc_auto_exit(false);
   DPRINTF("demo_dispatcher_init: MENU state, ESC owned by dispatcher\n");
+}
+
+/* A new ST session (st_session.h): back to the menu, whatever the last one
+ * left -- a demo running, or the dispatcher waiting for the exit to GEM. */
+void demo_dispatcher_restart(void) {
+  if (s_state == DEMO_STATE_ACTIVE && s_active && s_active->teardown) {
+    s_active->teardown();
+  }
+  s_active = NULL;
+  s_state = DEMO_STATE_MENU;
+  DPRINTF("dispatcher: new ST session -> menu\n");
 }
 
 /* Launch the demo at menu index `idx` (shared by the number keys and
@@ -354,6 +383,10 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
       case IKBD_SC_ESC:
         DPRINTF("dispatcher: ESC from menu -> exit to GEM\n");
         exit_to_gem();
+        break;
+      case IKBD_SC_B:
+        DPRINTF("dispatcher: B from menu -> return to Booster\n");
+        return_to_booster();
         break;
       case IKBD_SC_UP:
         s_menu_sel = (s_menu_sel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;

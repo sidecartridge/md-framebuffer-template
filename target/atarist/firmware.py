@@ -33,7 +33,11 @@ def binary_to_c_array(input_source, output_file, array_name, endian_format="litt
         raise ValueError("The binary file size (after trimming zeros) should be an even number of bytes for word processing.")
 
     # Prepare the output content
-    content = f"const uint16_t {array_name}[] = {{\n"
+    # 4-byte aligned: the RP copies the array to RAM through the XIP stream,
+    # whose address register has no bits 1:0. A uint16_t array is only 2-byte
+    # aligned by default, so at an address that is 2 mod 4 every copied word
+    # would be shifted.
+    content = f"const uint16_t {array_name}[] __attribute__((aligned(4))) = {{\n"
 
     # Convert trimmed data to comma-separated hex values with MAX_WORDS_PER_LINE words per line
     for i in range(offset, len(trimmed_data) - offset, 2 * MAX_WORDS_PER_LINE):

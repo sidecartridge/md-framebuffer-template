@@ -57,5 +57,7 @@ PICO_TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/14.2.rel1/arm-none-eabi/bin \
   - `/pico-extras`
 - To change FatFs configuration, edit `rp/src/ff/ffconf.h`, not the file inside `/fatfs-sdk`.
 - **Never add AI-tool attribution** to commits, PR descriptions, code comments, docs, or any other artifact. No `Co-Authored-By: Claude …`, no "Generated with Claude Code / ChatGPT / etc.", no "AI-assisted" notes. Write everything as the human author.
+- Release workflow: a new version starts with `release/vX.Y.Z` branched from `main` (the name is what `version.txt` will contain). Each epic gets its own branch cut from the release branch, `epic/NN-<slug>`, and its pull request targets the release branch, never `main`; it is merged after Diego verifies it on hardware. `main` receives the release branch once, when the version is done, and only then is it tagged. Commit, push and open PRs only when asked.
+- Planning notes (iterations, epics, stories) live in `docs/epics/`, which is gitignored and machine-local. Never name an epic, story, iteration or task in anything committed or pushed — comments, docs, changelog, commit messages, PR descriptions (epic branch names, `epic/NN-<slug>`, are the one exception). Write the information itself, not a pointer to a document the reader cannot open. Release check: `git grep -nIiE "\b(epic|story|iteration)[ -]?[0-9]|docs/epics" -- ':!CLAUDE.md' ':!AGENTS.md' ':!.gitignore'` must come back empty.
 
 Keep this file updated as the process evolves so every agent starts with the latest tribal knowledge.

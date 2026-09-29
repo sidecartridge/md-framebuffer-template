@@ -21,6 +21,19 @@
 // SELECT signal
 #define SELECT_GPIO 5  // GPIO signal for SELECT
 
+// SD card GPIO drive strength
+#define SD_SPI_GPIO_DRIVE_STRENGTH GPIO_DRIVE_STRENGTH_2MA
+
+// SD card SPI mode. Allowed values, from fatfs-sdk's my_spi.h and my_spi.c:
+// 0: CPOL=0, CPHA=0. Sample on leading rising edge, shift on falling edge.
+// 1: CPOL=0, CPHA=1. Sample on trailing falling edge, shift on rising edge.
+// 2: CPOL=1, CPHA=0. Sample on leading falling edge, shift on rising edge.
+// 3: CPOL=1, CPHA=1. Sample on trailing rising edge, shift on falling edge.
+// The driver asserts spi_mode < 4. Measured on a SidecarTridge Multi-device at
+// the default 24 MHz, reading 4 MB of raw sectors: mode 3 2,114 KB/s, mode 0
+// 1,894 KB/s, the same data from both.
+#define SD_SPI_MODE 3
+
 // GPIO constants for the read address from the bus
 #define READ_ADDR_GPIO_BASE 6     // Start of the GPIOs for the address
 #define READ_ADDR_PIN_COUNT 16    // Number of GPIOs for the address
@@ -82,7 +95,11 @@ extern unsigned int _booster_app_flash_start;
 extern unsigned int _config_flash_start;
 extern unsigned int _global_lookup_flash_start;
 extern unsigned int _global_config_flash_start;
-extern unsigned int __rom_in_ram_start__;
+// The 64 KB cartridge window. An array of unknown size, not a scalar: code
+// reads and writes the whole window through this symbol, and a scalar
+// declaration tells the compiler the object is 4 bytes, which makes every
+// access past them undefined behaviour it may optimise on.
+extern unsigned int __rom_in_ram_start__[];
 // NOLINTEND(readability-identifier-naming)
 
 #endif  // CONSTANTS_H

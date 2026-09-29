@@ -23,14 +23,17 @@
 #include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
 #include "ikbd.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
+#include "st_session.h"
 
-/* VBL frame-sync. The m68k does a cart-bus read at
- * $FB8400 after each blit (see VBLSYNC_ADDR in userfw.s); the
- * commemul ring captures it with low-16 = 0x84xx. fb_pump_rom3
- * routes ROM3 samples to both the IKBD demux and this detector;
- * fb_publish() blocks until s_vbl_seen advances before overwriting
- * the cart FB. The ~33 ms timeout keeps the RP from hanging if the
- * m68k isn't emitting acks (e.g. before it boots). */
+/* Blit-done ack. The m68k blits only a frame it has not blitted yet (the
+ * frame counter's low word changed; see FB_FRAME_COUNTER in userfw.s) and
+ * then does a cart-bus read at $FB8400 (VBLSYNC_ADDR); the commemul ring
+ * captures it with low-16 = 0x84xx. fb_pump_rom3 routes ROM3 samples to
+ * the IKBD demux, the ST's hello and this detector. fb_publish() waits for
+ * the ack of the frame it published last before overwriting the cart FB:
+ * after it, the m68k reads nothing until the counter changes again, so the
+ * publish can happen at any moment. The timeout keeps the RP from hanging
+ * when the m68k is not running (e.g. before it boots, or in GEM). */
 #define FB_VBLSYNC_HIBYTE   0x8400u
 #define FB_VBLSYNC_HIMASK   0xFF00u
 /* Safety net only: must comfortably exceed the worst-case latency from
@@ -250,9 +253,10 @@ void fb_render_frame(void) {
 }
 
 /* ROM3 ring dispatch: route each captured cart-bus read to the IKBD
- * demux and to the VBL frame-sync detector. */
+ * demux, the ST's hello and the VBL frame-sync detector. */
 static void fb_rom3_dispatch(uint16_t sample) {
   ikbd_consume_rom3_sample(sample);
+  st_session_consume_rom3_sample(sample);
   if ((sample & FB_VBLSYNC_HIMASK) == FB_VBLSYNC_HIBYTE) {
     s_vbl_seen++;
   }

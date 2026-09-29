@@ -43,7 +43,10 @@
  *                                        previous iteration)
  *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots,
  *                                        app-free).
- *   $FA4100  APP_FREE           ~16.5 KB free arena, ends at FRAMEBUFFER
+ *   $FA4100  AUDIO_BUFFER       1024 B (YM volume pairs)
+ *   $FA4500  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
+ *   $FA4502  BOOT_MESSAGE     126 B  (why the RP refused to start)
+ *   $FA4580  APP_FREE          ~15.4 KB free arena, ends at FRAMEBUFFER
  *   $FA8300  FRAMEBUFFER          32 KB (320x200 4 bpp low-res)
  *   $FAFFFF  end of region
  */
@@ -71,19 +74,30 @@
 #define CART_PALETTE_ENTRIES             16
 #define CART_PALETTE_SIZE                (CART_PALETTE_ENTRIES * 2)  /* 32 B */
 
-/* Audio sample buffer. Single-channel YM2149 ch A 4-bit DAC: each
- * byte holds a YM volume nibble (0..15) in its low 4 bits. The m68k
- * Timer-B IRQ handler fires at ~6.27 kHz and reads one byte per
- * fire, wrapping the read pointer at CART_AUDIO_BUFFER_SIZE. The
- * RP-side audio.c fills the buffer with samples mapped through a
- * logarithmic LUT (linear PCM -> closest matching YM volume). */
+/* Audio sample buffer: (vA, vB) YM2149 volume pairs, two bytes per
+ * sample for channels A and B. The m68k Timer-B IRQ handler fires at
+ * ~5,585 Hz and reads one pair per fire; its VBL handler points the read
+ * cursor back at the start every VBL, so a frame reads the first ~224
+ * bytes. The RP-side audio.c refills them once per VBL. */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 #define CART_AUDIO_BUFFER_SIZE           1024
 
-/* APP_FREE arena starts after the audio buffer. */
-#define CART_APP_FREE_OFFSET                                                  \
+/* Boot block, after the audio buffer. The ST reads the status word once
+ * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which
+ * the window's erase at boot leaves) starts the app; anything else makes
+ * pre_auto print the NUL-terminated text at CART_BOOT_MESSAGE_OFFSET and
+ * return to GEM. Written through st_session_veto_boot(). */
+#define CART_BOOT_STATUS_OFFSET                                               \
   (CART_AUDIO_BUFFER_OFFSET + CART_AUDIO_BUFFER_SIZE)
+#define CART_BOOT_OK                  0u
+#define CART_BOOT_VETOED              1u
+#define CART_BOOT_MESSAGE_OFFSET      (CART_BOOT_STATUS_OFFSET + 2)
+#define CART_BOOT_MESSAGE_SIZE        126  /* bytes, the NUL included */
+
+/* APP_FREE arena starts after the boot block. */
+#define CART_APP_FREE_OFFSET                                                  \
+  (CART_BOOT_MESSAGE_OFFSET + CART_BOOT_MESSAGE_SIZE)
 
 /* Framebuffer sized for low-res 4 bpp (320 x 200 = 32000 bytes). Sits
  * flush against the top of the 64 KB region: end = $FB0000 exactly,
@@ -165,6 +179,24 @@
 #define CART_CMD_RESET      1u
 #define CART_CMD_BOOT_GEM   2u
 #define CART_CMD_START      4u
+
+/* ROM3 signalling windows. The ST cannot write the cartridge window, so it
+ * tells the RP things by reading ROM3 addresses ($FB0000-$FBFFFF), which
+ * commemul's ring captures: the high byte of the captured address says what
+ * the read means, the low byte carries a value. Must match the equs in
+ * target/atarist/src/userfw.s.
+ *
+ *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
+ *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
+ *   $FB8500  the keyboard ACIA overran: IKBD bytes were lost (ikbd.c)
+ *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
+ *   $FB89xx  TOS version, high byte; sent just before the hello
+ *   $FB8Axx  TOS version, low byte; sent just before the hello */
+#define CART_ROM3_WINDOW_MASK        0xFF00u
+#define CART_ROM3_IKBD_OVERRUN_WINDOW 0x8500u
+#define CART_ROM3_HELLO_WINDOW       0x8800u
+#define CART_ROM3_TOS_HI_WINDOW      0x8900u
+#define CART_ROM3_TOS_LO_WINDOW      0x8A00u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.

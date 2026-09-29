@@ -62,9 +62,9 @@ main.o: prepare
 userfw.o: prepare
 	$(VASM) $(VASMFLAGS) $(SOURCES_DIR)/userfw.s -o $(BUILD_DIR)/userfw.o
 
-# (fbdrv.s used to be a separate object built here; Story 4.7
-# follow-up inlined the body as the FBDRV_INLINE macro in userfw.s
-# and removed the standalone file + linker section.)
+# (fbdrv.s used to be a separate object built here; its body is now
+# the FBDRV_INLINE macro in userfw.s, so there is no standalone file
+# or linker section any more.)
 
 .PHONY: build
 build: main.o userfw.o

@@ -23,4 +23,8 @@ typedef void (*CommEmulSampleCallback)(uint16_t sample);
 int commemul_init(void);
 void __not_in_flash_func(commemul_poll)(CommEmulSampleCallback callback);
 
+// Times the reader fell a whole ring behind the capture and the unread samples
+// were dropped (also readable over SWD as commOverruns).
+uint32_t commemul_getOverruns(void);
+
 #endif  // COMMEMUL_H

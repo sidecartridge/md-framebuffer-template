@@ -39,7 +39,7 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
 
 ```bash
 # ./build.sh <board> <build_type> <app_uuid>
-#   board:      pico | pico_w | sidecartos_16mb
+#   board:      pico_w
 #   build_type: debug | release
 #   app_uuid:   UUID4 identifying your app (must match desc/app.json)
 ./build.sh pico_w release 44444444-4444-4444-8444-444444444444

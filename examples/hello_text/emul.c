@@ -29,6 +29,7 @@
 #include "palette.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "reset.h"
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
@@ -74,7 +75,7 @@ void emul_start() {
   audio_init();
 
   /* SD card -- best-effort (only needed if you stream audio/data). */
-  FATFS fsys;
+  static FATFS fsys; /* ~600 bytes: off core 0's stack */
   SettingsConfigEntry *folder =
       settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
   const char *folderName = folder ? folder->value : "/test";
@@ -85,7 +86,10 @@ void emul_start() {
   /* Loop the baked-in jingle. Delete these two lines for a silent app. */
   audio_play_loop(audio_sample_data, (uint32_t)sizeof(audio_sample_data));
 
-  select_configure();
+  /* SELECT (configured in main()): a short press restarts the RP, a press
+   * held 10 s is a factory reset. select_poll() in the loop runs them. */
+  select_setResetCallback(reset_device);
+  select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   /* --- app state --- */
   font_set_font(&font8x8);
@@ -98,6 +102,7 @@ void emul_start() {
   while (true) {
     fb_pump_rom3(); /* ROM3 ring -> IKBD demux + VBL frame-sync */
     ikbd_pump();
+    select_poll();
 
     ikbd_key_event_t k;
     while (ikbd_pop_key(&k)) {

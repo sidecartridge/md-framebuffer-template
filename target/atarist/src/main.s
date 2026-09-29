@@ -28,14 +28,17 @@ ROM4_ADDR			equ $FA0000
 ; Shared 64 KB region layout (must match rp/src/include/cart_shared.h).
 ;
 ;   $FA0000  CARTRIDGE			m68k header + code (max 16 KB)
-;					Includes the unrolled MOVEM block
-;					(fbdrv.s) at offset $2000.
+;					Includes userfw's inline MOVEM blit
+;					(FBDRV_INLINE).
 ;   $FA4000  CMD_MAGIC_SENTINEL_ADDR	4 B
-;   $FA4004  RANDOM_TOKEN_ADDR		4 B  (legacy / unused since Epic 3.8)
-;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since Epic 3.8)
+;   $FA4004  RANDOM_TOKEN_ADDR		4 B  (legacy / unused since the handshake was removed)
+;   $FA4008  RANDOM_TOKEN_SEED_ADDR	4 B  (legacy / unused since the handshake was removed)
 ;   $FA400C  FB_FRAME_COUNTER_ADDR	4 B
 ;   $FA4010  SHARED_VARIABLES		240 B (60 x 4-byte slots, app-free).
-;   $FA4100  APP_FREE_ADDR	      ~16.5 KB free arena, ends at FRAMEBUFFER
+;   $FA4100  AUDIO_BUFFER_ADDR	      1024 B (YM volume pairs)
+;   $FA4500  BOOT_STATUS_ADDR	      2 B  (read once in pre_auto: 0 = start the app)
+;   $FA4502  BOOT_MESSAGE_ADDR	      126 B (why the RP refused; printed before GEM)
+;   $FA4580  APP_FREE_ADDR	      ~15.4 KB free arena, ends at FRAMEBUFFER
 ;   $FA8300  FRAMEBUFFER_ADDR	      32000 B (320x200 4bpp, flush at top)
 ;   $FAFFFF  end of region
 
@@ -43,7 +46,7 @@ CARTRIDGE_CODE_SIZE	equ $4000	; 16 KB max for cartridge header + code + fbdrv
 SHARED_BLOCK_ADDR	equ (ROM4_ADDR + CARTRIDGE_CODE_SIZE)		; $FA4000
 CMD_MAGIC_SENTINEL_ADDR	equ SHARED_BLOCK_ADDR				; $FA4000
 
-; 16-entry ST palette slot (Epic 5). 32 bytes of 16-bit palette
+; 16-entry ST palette slot. 32 bytes of 16-bit palette
 ; words published by the RP, applied to $FFFF8240..$FFFF825E by
 ; userfw_vbl_loop. Slot 12 of SHARED_VARIABLES (offset +$30).
 PALETTE_ADDR		equ (SHARED_BLOCK_ADDR + $40)			; $FA4040
@@ -59,15 +62,21 @@ AUDIO_BUFFER_ADDR	equ (SHARED_BLOCK_ADDR + $100)			; $FA4100
 AUDIO_BUFFER_SIZE	equ 1024
 AUDIO_BUFFER_END	equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)	; $FA4500
 
-; APP_FREE starts after the audio buffer.
-APP_FREE_ADDR		equ AUDIO_BUFFER_END				; $FA4500
+; Boot block, after the audio buffer. The RP can refuse to start the app
+; (st_session_veto_boot() in rp/src/st_session.c): a non-zero status makes
+; pre_auto print the NUL-terminated message and return to GEM.
+BOOT_STATUS_ADDR	equ AUDIO_BUFFER_END				; $FA4500
+BOOT_MESSAGE_ADDR	equ (BOOT_STATUS_ADDR + 2)			; $FA4502
+BOOT_MESSAGE_SIZE	equ 126
+
+; APP_FREE starts after the boot block.
+APP_FREE_ADDR		equ (BOOT_MESSAGE_ADDR + BOOT_MESSAGE_SIZE)	; $FA4580
 FBDRV_ADDR		equ (ROM4_ADDR + $2000)				; $FA2000 (MOVEM loop cart->ST screen copy)
 
-; Transitional: the pre-Story-1.2 boot UI fills only the first 8000 bytes
-; of the framebuffer with a 1bpp u8g2 image, and the .print_loop_low
-; copy loop below expands that mono buffer to fit the 32000-byte ST
-; screen. Story 1.2.6+ replaces that loop with the native 4bpp fbdrv
-; copy and this constant goes away.
+; Left over from the removed mono boot UI, which filled the first 8000
+; bytes of the framebuffer with a 1bpp u8g2 image that the
+; .print_loop_low copy loop expanded to the 32000-byte ST screen. The
+; native 4bpp copy replaced it; nothing references this constant.
 MONO_UI_BUFFER_SIZE	equ 8000
 
 ; User firmware entry point. The cartridge image places userfw.s at
@@ -270,16 +279,28 @@ start_rom_code:
 	cmp.w #2, d0
 	beq .highres_unsupported
 
-; Story 1.2: the old mono boot-UI loop (.print_loop_low, which read the
+; The old mono boot-UI loop (.print_loop_low, which read the
 ; first 8 KB of the cartridge framebuffer and expanded it 1bpp -> 4bpp
 ; into the ST screen) is gone. With u8g2 removed there's nothing left
 ; to render in mono, and the expander mis-mapped any 4bpp content
 ; written to the cart FB (40 cart bytes -> 1 ST row, so rows 0..4 of
 ; a 4bpp image landed on ST rows 0, 4, 8, 12, 16). Boot straight into
-; the user firmware: userfw owns the VBL loop and runs fbdrv (or, on
-; STE-class machines, an inline blitter copy) which copies the cart FB
-; to ST screen verbatim with the correct 4bpp planar interpretation.
+; the user firmware: userfw owns the VBL loop and runs the FBDRV_INLINE
+; copy, which copies the cart FB to ST screen verbatim with the correct 4bpp planar interpretation.
+; Unless the RP refused to start the app: then print its reason and return
+; to GEM, as for high resolution.
+	tst.w BOOT_STATUS_ADDR
+	bne.s .boot_vetoed
 	jmp USERFW
+
+.boot_vetoed:
+	print BOOT_MESSAGE_ADDR
+	print .crlf_txt
+	bra boot_gem
+
+.crlf_txt:
+	dc.b $d,$a,0
+	even
 
 .highres_unsupported:
 	print .highres_unsupported_txt
@@ -322,6 +343,22 @@ rom_function:
 ; Don't forget to include the macros for the shared functions at the top of file
     include "inc/sidecart_functions.s"
 
+; The NOP tail. The senders' wait loop must never be the last code of a module:
+; firmware.py strips trailing zero bytes from the image, pre_auto relocates
+; start_rom_code..end_rom_code in whole longwords, and both the write sender
+; (its code size includes 4 bytes past the loop) and the 68000's prefetch read
+; past the loop's last word. Every module that includes sidecart_functions.s
+; ends like this.
+	even
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+	nop
+main_end:
 
 end_rom_code:
 end_pre_auto:
