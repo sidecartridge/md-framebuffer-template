@@ -17,12 +17,11 @@
 #
 # A build of another CMake type than Release (-DCMAKE_TYPE=MinSizeRel, for
 # RP_CMAKE_BUILD_TYPE) appends its type (+minsizerel; CMake Debug is
-# +cmakedebug), an HTTPS build (-DHTTPS_BUILD=1) +https and a debug build
-# (-DDEBUG_BUILD=1) +debug to any of these, so the ID in flash tells the builds
-# of one tree apart.
+# +cmakedebug) and a debug build (-DDEBUG_BUILD=1) +debug to any of these, so
+# the ID in flash tells the builds of one tree apart.
 #
 # Inputs: -DSRC_DIR=<rp/src> -DOUT_DIR=<folder for build_id.h and build_id.c>
-#         -DDEBUG_BUILD=<0|1> -DHTTPS_BUILD=<0|1> -DCMAKE_TYPE=<CMake build type>
+#         -DDEBUG_BUILD=<0|1> -DCMAKE_TYPE=<CMake build type>
 
 if(DEFINED ENV{RELEASE_BUILD_ID} AND NOT "$ENV{RELEASE_BUILD_ID}" STREQUAL "")
   set(BUILD_ID "$ENV{RELEASE_BUILD_ID}")
@@ -53,8 +52,8 @@ else()
   endif()
 endif()
 
-# Longest shape is 21 characters (<sha7>-dirty.<diff7>), 33 with +https+debug,
-# 48 with +relwithdebinfo too.
+# Longest shape is 21 characters (<sha7>-dirty.<diff7>), 27 with +debug, 42
+# with +relwithdebinfo too.
 string(SUBSTRING "${BUILD_ID}" 0 21 BUILD_ID)
 string(TOLOWER "${CMAKE_TYPE}" CMAKE_TYPE_TAG)
 if(CMAKE_TYPE_TAG STREQUAL "debug")
@@ -62,9 +61,6 @@ if(CMAKE_TYPE_TAG STREQUAL "debug")
 endif()
 if(NOT CMAKE_TYPE_TAG STREQUAL "" AND NOT CMAKE_TYPE_TAG STREQUAL "release")
   set(BUILD_ID "${BUILD_ID}+${CMAKE_TYPE_TAG}")
-endif()
-if(HTTPS_BUILD)
-  set(BUILD_ID "${BUILD_ID}+https")
 endif()
 if(DEBUG_BUILD)
   set(BUILD_ID "${BUILD_ID}+debug")
