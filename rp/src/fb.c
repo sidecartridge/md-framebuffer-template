@@ -45,6 +45,9 @@
 
 static volatile uint32_t s_vbl_seen;
 static uint32_t s_vbl_published;
+/* Publishes that gave up waiting for the ack: expected until the ST runs
+ * userfw, never while it does. Readable over SWD by its symbol. */
+uint32_t fbAckTimeouts = 0;
 
 /* Demo sprite. Multi-colour 16x16 ball with a transparent
  * background (key = 0xFF; transparent corners give it a rounded look
@@ -281,6 +284,7 @@ void fb_publish(void) {
   while (s_vbl_seen == s_vbl_published) {
     fb_pump_rom3();
     if (time_us_32() - t_wait > FB_VSYNC_TIMEOUT_US) {
+      fbAckTimeouts++;
       break;
     }
   }
