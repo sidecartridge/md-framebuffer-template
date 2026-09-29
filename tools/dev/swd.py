@@ -81,6 +81,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
@@ -112,13 +113,19 @@ RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen")
 POSTMORTEM_VARIABLES = tuple(n for n, _ in COUNTERS) + ("s_vbl_published",
                                                         "commReadIdx")
 BUILD_ID_SYMBOL = "release_build_id"
+CART_SHARED_H = os.path.join(INCLUDE_DIR, "cart_shared.h")
+ST_WINDOW = 0xFA0000  # where the ST sees the cartridge window
+# Core 0's DWT watchpoint comparators (ARMv6-M): writing 0 to FUNCTIONn
+# disables comparator n.
+DWT_FUNCTION = (0xE0001028, 0xE0001038)
 
 
 class SwdError(Exception):
     pass
 
 
-def openocd_command(work_area: bool = False) -> list[str]:
+def openocd_command(work_area: bool = False,
+                    core0_only: bool = False) -> list[str]:
     ocd = os.environ.get("OPENOCD") or shutil.which("openocd")
     if not ocd:
         local = os.path.join(REPO, "..", "pico", "openocd", "src", "openocd")
@@ -131,6 +138,10 @@ def openocd_command(work_area: bool = False) -> list[str]:
         os.path.dirname(os.path.realpath(ocd)), "..", "tcl")
     if os.path.isfile(os.path.join(scripts, "interface", "cmsis-dap.cfg")):
         cmd += ["-s", scripts]
+    # rp2040.cfg makes the two cores an SMP pair: a halt or a watchpoint on one
+    # involves the other. core0_only leaves core 1 out of the session.
+    if core0_only:
+        cmd += ["-c", "set USE_CORE 0"]
     cmd += ["-f", "interface/cmsis-dap.cfg", "-f", "target/rp2040.cfg",
             "-c", "adapter speed 5000"]
     # OpenOCD's rp2040.cfg puts its work area, where it loads routines such as
@@ -156,12 +167,13 @@ TRANSIENT = re.compile(r"Failed to read memory|Error connecting DP|"
 ATTEMPTS = 4
 
 
-def openocd(*commands: str, check: bool = True, work_area: bool = False) -> str:
+def openocd(*commands: str, check: bool = True, work_area: bool = False,
+            core0_only: bool = False) -> str:
     """Run OpenOCD with `init`, the commands and `exit`; return its output.
     A run that failed on a transient debug-port error is repeated. Only a run
     that writes flash, with the cores halted, asks for OpenOCD's default work
     area (see openocd_command)."""
-    args = openocd_command(work_area) + ["-c", "init"]
+    args = openocd_command(work_area, core0_only) + ["-c", "init"]
     for c in commands:
         args += ["-c", c]
     args += ["-c", "exit"]
@@ -383,6 +395,222 @@ def matching_elf(explicit: str | None) -> str:
         if expected and read_build_id(elf) == expected:
             return elf
     raise SwdError("no cached ELF matches the RP's build ID: pass --elf")
+
+
+def cartridge_window(elf: str) -> int:
+    base = elf_symbols(elf, "__rom_in_ram_start__").get("__rom_in_ram_start__")
+    if not base:
+        raise SwdError(f"{elf} has no __rom_in_ram_start__")
+    return base[0]
+
+
+def st_words(data: bytes) -> list[int]:
+    """The 16-bit words the ST reads from a stretch of the window. The cart bus
+    swaps the two bytes of each word, so a word the ST reads is the RP's
+    little-endian uint16 at the same offset."""
+    return list(struct.unpack(f"<{len(data) // 2}H", data))
+
+
+def st_long(data: bytes, offset: int) -> int:
+    """A longword as the ST's move.l reads it: two words, high word first."""
+    hi, lo = struct.unpack_from("<HH", data, offset)
+    return (hi << 16) | lo
+
+
+def st_text(data: bytes) -> str:
+    """A NUL-terminated string as the ST reads it."""
+    raw = b"".join(struct.pack(">H", w) for w in st_words(data))
+    return raw.split(b"\0", 1)[0].decode("ascii", errors="replace")
+
+
+def palette_rgb(words: list[int]) -> list[tuple[int, int, int]]:
+    """ST palette words (0RRR0GGG0BBB) to RGB. With the STE's extra bit
+    (bit 3 of a nibble) in use anywhere, all 16 are read as STE colours."""
+    ste = any(w & 0x888 for w in words)
+
+    def level(n: int) -> int:
+        if ste:
+            return (((n & 7) << 1) | ((n >> 3) & 1)) * 17
+        return (n & 7) * 255 // 7
+    return [(level(w >> 8), level(w >> 4), level(w)) for w in words]
+
+
+def write_png_rgb(path: str, width: int, height: int, rows: list[bytes]) -> None:
+    """8-bit RGB PNG; each row is width * 3 bytes."""
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return (struct.pack(">I", len(data)) + body +
+                struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF))
+    raw = b"".join(b"\0" + row for row in rows)
+    png = (b"\x89PNG\r\n\x1a\n" +
+           chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) +
+           chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+    with open(path, "wb") as f:
+        f.write(png)
+
+
+def image_from_cart_fb(defs: dict[str, int], fb: bytes) -> list[int]:
+    """The planar image as the ST shows it, from the cartridge framebuffer.
+    The m68k's MOVEM blit stores 48-byte chunks backwards, so the RP keeps
+    them in reverse order, with a short tail in natural order after them (see
+    "Framebuffer chunk layout" in cart_shared.h): undo that."""
+    words = st_words(fb)
+    chunk = defs["CART_FB_CHUNK_BYTES"] // 2
+    count = defs["CART_FB_CHUNK_COUNT"]
+    image = []
+    for c in range(count):
+        k = count - 1 - c
+        image += words[k * chunk:(k + 1) * chunk]
+    return image + words[count * chunk:]
+
+
+def image_rows(image: list[int], rgb: list[tuple[int, int, int]],
+               scale: int) -> list[bytes]:
+    """ST low resolution, 320x200 in 16 colours: each 16-pixel group is four
+    plane words, bit 15 the leftmost pixel."""
+    rows = []
+    for y in range(200):
+        line = bytearray()
+        for g in range(20):
+            p0, p1, p2, p3 = image[y * 80 + g * 4:y * 80 + g * 4 + 4]
+            for bit in range(15, -1, -1):
+                idx = (((p0 >> bit) & 1) | (((p1 >> bit) & 1) << 1) |
+                       (((p2 >> bit) & 1) << 2) | (((p3 >> bit) & 1) << 3))
+                line += bytes(rgb[idx]) * scale
+        rows.extend([bytes(line)] * scale)
+    return rows
+
+
+def release_core0_watch() -> None:
+    """Disable core 0's watchpoints and release it, whatever state a frame
+    grab left: with debug halting off a watchpoint cannot stop it again."""
+    openocd(*(f"mww 0x{f:08x} 0" for f in DWT_FUNCTION),
+            f"mww 0x{DHCSR:08x} 0x{DHCSR_RELEASE:08x}",
+            check=False, core0_only=True)
+
+
+def grab_frames(elf: str, count: int, now: bool,
+                timeout_ms: int = 1000) -> list[tuple[int, bytes, bytes]]:
+    """(frame counter, framebuffer, palette) for `count` consecutive frames.
+
+    fb_publish() writes the frame counter last, after the framebuffer, and a
+    dump takes longer than a frame. So core 0 is stopped by a watchpoint on
+    the counter: at each hit a frame is complete, and the next one cannot
+    start until the dump is done and core 0 resumes. Core 1 and the ST keep
+    running. `now` reads the window as it is, without waiting."""
+    base = cartridge_window(elf)
+    defs = header_defines(CART_SHARED_H)
+    counter = base + defs["CART_FB_FRAME_COUNTER_OFFSET"]
+    fb = base + defs["CART_FRAMEBUFFER_OFFSET"]
+    fb_size = defs["CART_FRAMEBUFFER_SIZE"]
+    pal = base + defs["CART_PALETTE_OFFSET"]
+    pal_size = defs["CART_PALETTE_SIZE"]
+    with tempfile.TemporaryDirectory() as tmp:
+        cmds = [] if now else ["halt", f"wp 0x{counter:08x} 4 w"]
+        for i in range(count):
+            if not now:
+                cmds += ["resume", f"wait_halt {timeout_ms}"]
+            cmds += [f"dump_image {tmp}/fb{i}.bin 0x{fb:08x} {fb_size}",
+                     f"dump_image {tmp}/pal{i}.bin 0x{pal:08x} {pal_size}",
+                     f"mdw 0x{counter:08x}"]
+        if not now:
+            cmds += [f"rwp 0x{counter:08x}", "resume"]
+        try:
+            out = openocd(*cmds, check=False, core0_only=True)
+        finally:
+            if not now:
+                release_core0_watch()
+        if not now and out.count("halted due to watchpoint") < count:
+            raise SwdError(f"no frame published within {timeout_ms} ms: is "
+                           "the app publishing? (--now reads the window as it is)")
+        values = re.findall(rf"0x{counter:08x}:\s+([0-9a-fA-F]{{8}})", out)
+        frames = []
+        for i in range(count):
+            with open(f"{tmp}/fb{i}.bin", "rb") as f:
+                fb_data = f.read()
+            with open(f"{tmp}/pal{i}.bin", "rb") as f:
+                pal_data = f.read()
+            if len(fb_data) != fb_size or len(pal_data) != pal_size or i >= len(values):
+                raise SwdError("frame dump incomplete: " + out.strip()[-200:])
+            frames.append((int(values[i], 16) & 0xFFFF, fb_data, pal_data))
+    return frames
+
+
+def cmd_fb(args: argparse.Namespace) -> int:
+    elf = matching_elf(args.elf)
+    defs = header_defines(CART_SHARED_H)
+    frames = grab_frames(elf, 2 if args.pair else 1, args.now)
+    stem, ext = os.path.splitext(args.out)
+    for i, (frame, fb, pal) in enumerate(frames):
+        path = f"{stem}-{i + 1}{ext or '.png'}" if args.pair else args.out
+        image = image_from_cart_fb(defs, fb)
+        rgb = palette_rgb(st_words(pal))
+        write_png_rgb(path, 320 * args.scale, 200 * args.scale,
+                      image_rows(image, rgb, args.scale))
+        note = f"frame {frame}"
+        if args.raw:
+            raw = os.path.splitext(path)[0] + ".bin"
+            with open(raw, "wb") as f:
+                f.write(b"".join(struct.pack(">H", w) for w in image))
+            note += f", planar bytes in {raw}"
+        print(f"wrote {path} ({note})")
+    return 0
+
+
+def cmd_shared(args: argparse.Namespace) -> int:
+    elf = matching_elf(args.elf)
+    base = cartridge_window(elf)
+    d = header_defines(CART_SHARED_H)
+    start = d["CART_CMD_SENTINEL_OFFSET"]
+    end = d["CART_APP_FREE_OFFSET"]
+    data = read_memory(base + start, end - start)
+
+    def at(name: str) -> int:
+        return d[name] - start
+
+    def st_addr(name: str) -> str:
+        return f"${ST_WINDOW + d[name]:06X}"
+
+    commands = {v: n for n, v in d.items() if n.startswith("CART_CMD_")
+                and n != "CART_CMD_SENTINEL_OFFSET"}
+    sentinel = st_long(data, at("CART_CMD_SENTINEL_OFFSET"))
+    print(f"cartridge window 0x{base:08x} (ST ${ST_WINDOW:06X}), ELF "
+          f"{os.path.basename(elf)}")
+    print(f"  {st_addr('CART_CMD_SENTINEL_OFFSET')}  command sentinel    "
+          f"0x{sentinel:08x} {commands.get(sentinel, '')}")
+    counter = st_words(data[at("CART_FB_FRAME_COUNTER_OFFSET"):][:4])
+    print(f"  {st_addr('CART_FB_FRAME_COUNTER_OFFSET')}  frame counter       "
+          f"low word {counter[0]} (what the ST compares)")
+    # Shared-variable slots: the palette's are shown above; the others by
+    # index, named by any *_SVAR_* define in rp/src/include.
+    names: dict[int, list[str]] = {}
+    for name, value in include_defines().items():
+        if "_SVAR_" in name and 0 <= value < d["CART_SHARED_VARIABLES_SLOTS"]:
+            names.setdefault(value, []).append(name)
+    first_pal = (d["CART_PALETTE_OFFSET"] - d["CART_SHARED_VARIABLES_OFFSET"]) // 4
+    pal_slots = range(first_pal, first_pal + d["CART_PALETTE_SIZE"] // 4)
+    for i in range(d["CART_SHARED_VARIABLES_SLOTS"]):
+        if i in pal_slots:
+            continue
+        off = at("CART_SHARED_VARIABLES_OFFSET") + i * 4
+        value = st_long(data, off)
+        label = " / ".join(names.get(i, []))
+        if not label and (value == 0 and not args.all):
+            continue
+        print(f"  ${ST_WINDOW + d['CART_SHARED_VARIABLES_OFFSET'] + i * 4:06X}  "
+              f"slot {i:2} {label or '-':<12} 0x{value:08x}  {value}")
+    pal = st_words(data[at("CART_PALETTE_OFFSET"):][:d["CART_PALETTE_SIZE"]])
+    print(f"  {st_addr('CART_PALETTE_OFFSET')}  palette             " +
+          " ".join(f"{w:03X}" for w in pal))
+    audio = data[at("CART_AUDIO_BUFFER_OFFSET"):][:16]
+    print(f"  {st_addr('CART_AUDIO_BUFFER_OFFSET')}  audio buffer head   " +
+          " ".join(f"{w:04X}" for w in st_words(audio)) + " (vA vB pairs)")
+    status = st_words(data[at("CART_BOOT_STATUS_OFFSET"):][:2])[0]
+    message = st_text(data[at("CART_BOOT_MESSAGE_OFFSET"):]
+                      [:d["CART_BOOT_MESSAGE_SIZE"]])
+    print(f"  {st_addr('CART_BOOT_STATUS_OFFSET')}  boot status         "
+          f"{status}" + (f" (vetoed: {message!r})" if status else " (start)"))
+    return 0
 
 
 def cmd_read(args: argparse.Namespace) -> int:
@@ -811,6 +1039,24 @@ def build_parser() -> argparse.ArgumentParser:
     cn.add_argument("--watch", type=float, metavar="SECONDS",
                     help="print what changed every SECONDS until Ctrl-C")
     cn.set_defaults(func=cmd_counters)
+
+    fbp = sub.add_parser("fb", help="grab the framebuffer as a PNG")
+    fbp.add_argument("out")
+    fbp.add_argument("--elf")
+    fbp.add_argument("--pair", action="store_true",
+                     help="two consecutive frames, OUT-1 and OUT-2")
+    fbp.add_argument("--raw", action="store_true",
+                     help="also write the planar bytes as the ST shows them")
+    fbp.add_argument("--now", action="store_true",
+                     help="do not wait for a published frame")
+    fbp.add_argument("--scale", type=int, default=2)
+    fbp.set_defaults(func=cmd_fb)
+
+    sh = sub.add_parser("shared", help="the cartridge window's shared block")
+    sh.add_argument("--elf")
+    sh.add_argument("--all", action="store_true",
+                    help="also print unnamed slots that are zero")
+    sh.set_defaults(func=cmd_shared)
 
     hp = sub.add_parser("heap", help="heap size, peak and free space")
     hp.add_argument("--elf")
