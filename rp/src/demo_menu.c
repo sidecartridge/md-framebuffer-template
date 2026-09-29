@@ -336,14 +336,19 @@ void demo_dispatcher_init(void) {
   DPRINTF("demo_dispatcher_init: MENU state, ESC owned by dispatcher\n");
 }
 
-/* A new ST session (st_session.h): back to the menu, whatever the last one
- * left -- a demo running, or the dispatcher waiting for the exit to GEM. */
-void demo_dispatcher_restart(void) {
+/* Back to the menu, whatever was left -- a demo running, or the dispatcher
+ * waiting for the exit to GEM. */
+static void back_to_menu(void) {
   if (s_state == DEMO_STATE_ACTIVE && s_active && s_active->teardown) {
     s_active->teardown();
   }
   s_active = NULL;
   s_state = DEMO_STATE_MENU;
+}
+
+/* A new ST session (st_session.h): back to the menu. */
+void demo_dispatcher_restart(void) {
+  back_to_menu();
   DPRINTF("dispatcher: new ST session -> menu\n");
 }
 
@@ -426,7 +431,44 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
   }
 }
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/* Extra time every frame takes, set from the host (DEVHOOKS_APP_SLOW_FRAME):
+ * an app late with its frames, on demand. The sound and the publish
+ * handshake must survive it. */
+static uint32_t s_slow_frame_us;
+
+uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
+                                 uint16_t payloadSize) {
+  uint16_t arg = payloadSize >= 2u ? payload[0] : 0u;
+  switch (commandId) {
+    case DEVHOOKS_APP_DEMO:
+      if (arg < 1u || arg > MENU_ITEM_COUNT) return 0;
+      back_to_menu();
+      launch_demo(arg - 1u);
+      return 1;
+    case DEVHOOKS_APP_MENU:
+      DPRINTF("dispatcher: host -> menu\n");
+      back_to_menu();
+      return 1;
+    case DEVHOOKS_APP_OVERLAY:
+      g_show_timing = arg != 0u;
+      return 1;
+    case DEVHOOKS_APP_SLOW_FRAME:
+      s_slow_frame_us = (uint32_t)arg * 1000u;
+      DPRINTF("dispatcher: every frame stalls %u ms\n", (unsigned)arg);
+      return 1;
+    default:
+      return 0;
+  }
+}
+#endif
+
 void demo_dispatcher_render_frame(void) {
+#if defined(_DEBUG) && (_DEBUG != 0)
+  if (s_slow_frame_us != 0u) {
+    busy_wait_us_32(s_slow_frame_us);
+  }
+#endif
   switch (s_state) {
     case DEMO_STATE_MENU:
       render_menu();
