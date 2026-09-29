@@ -285,11 +285,10 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     PICO_USE_STACK_GUARDS=1)
 
 
-# Remove unused data
-target_link_options(${PROJECT_NAME} PRIVATE
-   "-Wl,--gc-sections"
-   "-Wl,--strip-all"
-)
+# Remove unused data. The ELF keeps its symbol table: it never reaches the
+# .uf2 (byte-identical either way), and the SWD tools find the cartridge
+# window, the build ID and the counters by symbol.
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)
