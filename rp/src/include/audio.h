@@ -10,12 +10,13 @@
  * frame: audio_render_frame() only keeps a small FIFO topped up, from the
  * main loop, with the app's audio (audio.c).
  *
- * Latency: a sample plays at most AUDIO_FIFO_SLICES + 2 VBLs (120 ms by
- * default) after the callback produced it; the main loop may stall as
- * long without the sound noticing. An app that wants less latency defines
- * a smaller AUDIO_FIFO_SLICES (at least 1) when it builds audio.c. When
- * the FIFO runs dry the ST holds the last sample, and audioUnderruns
- * counts it (readable over SWD).
+ * Latency and stalls: the main loop may go AUDIO_FIFO_SLICES VBLs (4:
+ * 80 ms by default) between two calls to audio_render_frame() without the
+ * sound noticing, and a sample plays at most AUDIO_FIFO_SLICES + 2 VBLs
+ * (120 ms) after the callback produced it. An app that wants less latency
+ * defines a smaller AUDIO_FIFO_SLICES (at least 1) when it builds audio.c,
+ * and tolerates shorter stalls. When the FIFO runs dry the ST holds the
+ * last sample, and audioUnderruns counts it (readable over SWD).
  *
  * Apps install audio content one of two ways:
  *

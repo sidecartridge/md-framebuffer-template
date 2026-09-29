@@ -15,10 +15,12 @@
  *     card, the app's own generator);
  *   - a repeating timer interrupt (audio_writer) follows the ST's reports
  *     and moves one VBL of samples from the FIFO into each slice ahead.
- * An app can take up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD frames to
- * draw one without the sound noticing; a sample reaches the ST that many
- * VBLs after the callback produced it, at most. When the FIFO is empty the
- * slice holds the last sample (an underrun, counted), never stale data.
+ * The main loop may go AUDIO_FIFO_SLICES VBLs between two top-ups without
+ * the sound noticing (80 ms by default): each VBL takes one slice from the
+ * FIFO, the slices written ahead included. A sample reaches the ST at most
+ * AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD VBLs after the callback produced
+ * it. When the FIFO is empty the slice holds the last sample (an underrun,
+ * counted), never stale data.
  *
  * See audio.h for the public API and `audio_play_loop` /
  * `audio_set_fill_callback` semantics.
@@ -54,8 +56,9 @@
 #define AUDIO_SLICES_AHEAD 2u
 
 /* The FIFO between the app's fill callback and the slice writer, in VBLs of
- * samples. More tolerates a longer stall of the main loop, and delays the
- * sound as much: up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD VBLs. */
+ * samples: the longest the main loop may go between two top-ups. More
+ * delays the sound as much: up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD
+ * VBLs from the callback to the ST. */
 #ifndef AUDIO_FIFO_SLICES
 #define AUDIO_FIFO_SLICES 4u
 #endif
@@ -298,6 +301,9 @@ static bool __not_in_flash_func(audio_writer)(repeating_timer_t *timer) {
     s_st_vbl = slice;
     s_next_vbl = slice + 1u;
   } else {
+    /* The report is the slice modulo CART_AUDIO_SLICES: a writer stalled for
+     * that many VBLs or more (80 ms with the interrupts off) cannot tell, and
+     * counts no late slices for it. The slices still go where they should. */
     s_st_vbl += (slice - s_st_vbl) % CART_AUDIO_SLICES;
   }
   if (s_next_vbl <= s_st_vbl) {
