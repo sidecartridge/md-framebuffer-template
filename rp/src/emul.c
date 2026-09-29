@@ -32,6 +32,7 @@
 #include "memfunc.h"
 #include "palette.h"
 #include "pico/stdlib.h"
+#include "reset.h"
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
@@ -144,8 +145,13 @@ void emul_start() {
                     (uint32_t)sizeof(audio_sample_data));
   }
 
-  // Cartridge SELECT button -- apps can poll select_isPressed().
-  select_configure();
+  // Cartridge SELECT button, configured in main() (held at power-on it goes
+  // to Booster). While the app runs, as md-microfirmware-template: a short
+  // press restarts the RP, a press held 10 s is a factory reset (the global
+  // settings are erased and Booster then clears every app's settings).
+  // select_poll() in the main loop runs them; it never blocks.
+  select_setResetCallback(reset_device);
+  select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   // Bring up the demo dispatcher. demo_dispatcher_init takes
   // ownership of the ESC key from ikbd.c (ESC now means "back to
@@ -169,6 +175,7 @@ void emul_start() {
   while (true) {
     fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
     ikbd_pump();
+    select_poll();
 
     /* The ST rebooted: start its session over (see st_session.h). */
     if (st_session_consume_boot()) {

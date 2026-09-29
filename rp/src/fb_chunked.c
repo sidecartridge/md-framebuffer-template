@@ -66,14 +66,21 @@ static uint16_t fb_planar_scratch[CART_FRAMEBUFFER_SIZE / sizeof(uint16_t)]
  * pointer + arg off the FIFO, runs it, signals completion. Both the c2p
  * bottom half and the demos' band rendering dispatch through this. The
  * fn/arg travel through the FIFO (not shared memory), so the FIFO's
- * push/pop barriers fully order the handoff. Placed in RAM so the loop
- * doesn't pay XIP cost on every dispatch. */
+ * push/pop barriers fully order the handoff.
+ *
+ * Parked here, Core 1 never touches flash: the loop is in RAM and uses
+ * the SDK's inline FIFO calls (the out-of-line ones live in flash). So
+ * Core 0 may erase or program flash while Core 1 waits -- the long
+ * SELECT press erases the global settings -- as long as no job is
+ * running. Jobs are always joined (fb_core1_wait) before the main loop
+ * goes on, so Core 1 is parked whenever the main loop runs. */
 static void __not_in_flash_func(fb_core1_loop)(void) {
   for (;;) {
-    fb_core1_job_t job = (fb_core1_job_t)(uintptr_t)multicore_fifo_pop_blocking();
-    void *arg = (void *)(uintptr_t)multicore_fifo_pop_blocking();
+    fb_core1_job_t job =
+        (fb_core1_job_t)(uintptr_t)multicore_fifo_pop_blocking_inline();
+    void *arg = (void *)(uintptr_t)multicore_fifo_pop_blocking_inline();
     job(arg);
-    multicore_fifo_push_blocking(0); /* done */
+    multicore_fifo_push_blocking_inline(0); /* done */
   }
 }
 
