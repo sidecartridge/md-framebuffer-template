@@ -45,7 +45,7 @@ Top-level build is driven by `build.sh` in the repo root:
 
 ```bash
 # <board_type> = pico_w
-# <build_type> = debug | release   (note: always compiled as MinSizeRel — see below)
+# <build_type> = debug | release   (both compiled as CMake Release, -O3 — see below)
 # <app_uuid_key> = UUID4 identifying this app, must match desc/app.json
 ./build.sh pico_w release 44444444-4444-4444-8444-444444444444
 ```
@@ -66,7 +66,7 @@ Build flow (orchestrated by `build.sh`):
 4. Computes MD5, renames to `dist/<APP_UUID>-<VERSION>.uf2`, and substitutes UUID/MD5/version into `dist/<APP_UUID>.json` from the `desc/app.json` template.
 
 ### Build gotchas
-- **CMake always builds with `CMAKE_BUILD_TYPE=MinSizeRel`** regardless of the `<build_type>` argument — `rp/build.sh` maps `(board, build_type)` to a preset in `rp/src/CMakePresets.json` (`<board>-debug` / `<board>-release`), and every preset pins MinSizeRel. A full `Release` previously caused breakage (memory/over-optimization). `<build_type>` only controls the `DEBUG_MODE` macro and the dist filename. For speed, hot pure-compute files opt in with `#pragma GCC optimize("O3")`.
+- **Both build types are CMake `Release` (-O3).** `rp/build.sh` maps `(board, build_type)` to a preset in `rp/src/CMakePresets.json` (`<board>-debug` / `<board>-release`); both presets set Release, and `<build_type>` sets only `DEBUG_MODE` (DPRINTF and the UART console on the RP, `_DEBUG` in the m68k assembly) and the dist filename, so a debug build runs the same optimised code as a release build. Up to v1.0.0beta every build was `MinSizeRel`, because a full Release build had once broken at runtime (no reproducer was recorded). `RP_CMAKE_BUILD_TYPE` overrides the CMake type in `rp/build.sh`, with a warning: `MinSizeRel` to compare against the old builds, `Debug` (-Og, asserts on) to step through the code in a debugger; the build ID carries it (`+minsizerel`, `+cmakedebug`). Release takes about 27 KB more flash than MinSizeRel; the heap keeps the same room in a release build and 4 KB less in a debug build (the ROM3 ring's alignment padding). The hot compute files keep their `#pragma GCC optimize("O3")`, so they stay fast in a MinSizeRel build too.
 - `RELEASE_DATE="YYYY-MM-DD HH:MM:SS"` fixes the date the images carry (the RP's debug banner, the SDK's binary-info build date and the cartridge header's GEMDOS date and time), so two builds of one commit are byte-identical. Unset, `build.sh` takes the time of the build, once for both images. `<build_type>` is `release` or `debug` in any case, anything else stops the build, and it sets `DEBUG_MODE` for both targets (the m68k code is assembled with `_DEBUG` from it).
 - **The cartridge must be live before TOS looks for it.** On a power-on the ST checks the cartridge about 0.4 s after the RP starts. Anything slow before `emul_start()` copies the image (a chatty debug trace, a slow flash or SD operation) can make the ST boot to GEM without the app. At 115,200 baud the debug trace alone delayed the image by about 0.3 s; at 921,600 the image is ready about 45 ms after the first trace line.
 - Harmless VASM warnings during the m68k build (`target data type overflow`, `trailing garbage after option -D`) can be ignored.

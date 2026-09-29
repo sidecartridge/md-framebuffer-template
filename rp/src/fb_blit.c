@@ -12,7 +12,8 @@
 
 #include "fb_chunked.h"
 
-/* Per-file -O3: the global build is MinSizeRel (-Os); these blit
+/* Per-file -O3, whatever the CMake build type (RP_CMAKE_BUILD_TYPE can
+ * make it MinSizeRel, -Os); these blit
  * primitives are pure per-pixel compute on the draw path. No cart-bus /
  * PIO timing code here. */
 #pragma GCC optimize("O3")

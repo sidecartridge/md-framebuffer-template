@@ -135,10 +135,11 @@ while (true) {
   The user usually runs the build themselves; only build the **Atari/m68k
   target** if you change `target/atarist/` asm. RP-only C changes don't
   need it.
-- **Optimization:** the global build is `MinSizeRel` (`-Os`). For hot
-  per-pixel loops add `#pragma GCC optimize("O3")` at the top of that
-  *compute-only* `.c` file and `__not_in_flash_func()` on the function —
-  never on bus/PIO/timing code. The demo sources are the reference for
+- **Optimization:** both build types are CMake `Release` (`-O3`). Hot
+  per-pixel loops also want `__not_in_flash_func()` on the function, and
+  the demos put `#pragma GCC optimize("O3")` at the top of their
+  *compute-only* `.c` files, which keeps them fast in a `MinSizeRel`
+  build (`RP_CMAKE_BUILD_TYPE`). The demo sources are the reference for
   the full toolbox (LUTs, the SIO interpolator, `fb_core1_dispatch`
   dual-core).
 - **Never** edit the `pico-sdk/`, `pico-extras/`, `fatfs-sdk/`

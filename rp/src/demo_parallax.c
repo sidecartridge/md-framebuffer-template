@@ -38,7 +38,8 @@
 #include "pico/time.h"
 #include "uridium_surface.h"
 
-/* Per-file -O3: the global build is MinSizeRel (-Os); this file is pure
+/* Per-file -O3, whatever the CMake build type (RP_CMAKE_BUILD_TYPE can
+ * make it MinSizeRel, -Os); this file is pure
  * compute (per-pixel parallax/sprite drawing), so optimise it for
  * speed. No cart-bus / PIO timing code lives here. */
 #pragma GCC optimize("O3")

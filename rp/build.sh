@@ -74,8 +74,9 @@ export BOARD_TYPE=${1:-pico_w}
 export PICO_BOARD=$BOARD_TYPE
 echo "Board type: $BOARD_TYPE"
 
-# Build type, case-insensitive. If nothing is passed, use release. debug is
-# the same build with DEBUG_MODE=1, so DPRINTF traces go to the UART console.
+# Build type, case-insensitive. If nothing is passed, use release. Both are
+# CMake Release (-O3); debug is the same build with DEBUG_MODE=1, so DPRINTF
+# traces go to the UART console.
 BUILD_TYPE=$(echo "${2:-release}" | tr '[:upper:]' '[:lower:]')
 case "$BUILD_TYPE" in
     release|debug) ;;
@@ -103,6 +104,21 @@ fi
 CONFIGURE_PRESET="${BOARD_TYPE}-${PRESET_KIND}"
 BUILD_PRESET="${BOARD_TYPE}-${PRESET_KIND}"
 BUILD_DIR="build-${BOARD_TYPE}-${PRESET_KIND}"
+
+# Up to v1.0.0beta every build was compiled MinSizeRel, because a Release
+# build once broke at runtime (no reproducer was recorded). The presets set
+# Release; RP_CMAKE_BUILD_TYPE replaces only the CMake build type: MinSizeRel
+# to compare against those builds, Debug (-Og, asserts on) to step through the
+# code in a debugger. The build ID carries it (+minsizerel, +cmakedebug).
+CMAKE_BUILD_TYPE_ARG=Release
+if [ -n "${RP_CMAKE_BUILD_TYPE:-}" ]; then
+    CMAKE_BUILD_TYPE_ARG=$RP_CMAKE_BUILD_TYPE
+    echo "************************************************************"
+    echo "WARNING: RP_CMAKE_BUILD_TYPE=$RP_CMAKE_BUILD_TYPE overrides the"
+    echo "         CMake build type. This is not a shipping build."
+    echo "************************************************************"
+fi
+echo "CMake build type: $CMAKE_BUILD_TYPE_ARG (DEBUG_MODE=$DEBUG_MODE)"
 echo "Configure preset: $CONFIGURE_PRESET"
 echo "Build preset: $BUILD_PRESET"
 
@@ -115,7 +131,7 @@ rm -rf "$BUILD_DIR"
 # there.
 (
     cd src
-    cmake --preset "$CONFIGURE_PRESET"
+    cmake --preset "$CONFIGURE_PRESET" -DCMAKE_BUILD_TYPE="$CMAKE_BUILD_TYPE_ARG"
     cmake --build --preset "$BUILD_PRESET"
 )
 

@@ -38,7 +38,8 @@
 #include "cart_shared.h"
 #include "pico/multicore.h"
 
-/* Per-file -O3: the global build is MinSizeRel (-Os). The chunky->planar
+/* Per-file -O3, whatever the CMake build type (RP_CMAKE_BUILD_TYPE can
+ * make it MinSizeRel, -Os). The chunky->planar
  * conversion + chunk-reversed memcpy here run on the hot per-frame path
  * and are pure compute; the dual-core handshake uses blocking FIFO calls
  * (real SDK calls with barriers), so -O3 is safe. */
