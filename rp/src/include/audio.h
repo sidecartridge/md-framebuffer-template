@@ -3,10 +3,20 @@
  * Description: Cart-shared audio buffer producer + app-facing API.
  *
  * The m68k Timer-B IRQ (target/atarist/src/userfw.s) reads sample
- * bytes from a 1024-byte cart buffer at CART_AUDIO_BUFFER_OFFSET
- * and writes them to YM2149 volume registers. The RP refills the
- * "fresh" prefix of the buffer once per VBL via audio_render_frame()
- * (paced to ~50 Hz via time_us_32).
+ * bytes from the cart buffer at CART_AUDIO_BUFFER_OFFSET, one slice per
+ * VBL, and writes them to YM2149 volume registers. The RP writes the
+ * slices ahead of the one playing from a timer interrupt, so the sound
+ * never tears and never repeats, however long the app takes to draw a
+ * frame: audio_render_frame() only keeps a small FIFO topped up, from the
+ * main loop, with the app's audio (audio.c).
+ *
+ * Latency and stalls: the main loop may go AUDIO_FIFO_SLICES VBLs (4:
+ * 80 ms by default) between two calls to audio_render_frame() without the
+ * sound noticing, and a sample plays at most AUDIO_FIFO_SLICES + 2 VBLs
+ * (120 ms) after the callback produced it. An app that wants less latency
+ * defines a smaller AUDIO_FIFO_SLICES (at least 1) when it builds audio.c,
+ * and tolerates shorter stalls. When the FIFO runs dry the ST holds the
+ * last sample, and audioUnderruns counts it (readable over SWD).
  *
  * Apps install audio content one of two ways:
  *
@@ -16,8 +26,8 @@
  *      jingle or sound effect.
  *
  *   2. audio_set_fill_callback(cb) -- low-level. The library
- *      invokes `cb(buf, bytes)` once per VBL refill with
- *      `bytes` set to the m68k's per-VBL consumption rate; the
+ *      invokes `cb(buf, bytes)` once per VBL of samples it needs,
+ *      with `bytes` set to the m68k's per-VBL consumption; the
  *      callback writes exactly that many bytes into `buf`. Use for
  *      streaming sources (e.g. SD-backed PCM).
  *
@@ -27,9 +37,8 @@
  * format-agnostic; it just copies bytes into the cart buffer.
  *
  * If no callback is installed, audio_render_frame() is a no-op and
- * the cart buffer stays whatever audio_init() left it (zero =
- * silence). Calling audio_set_fill_callback(NULL) re-enters this
- * silent state.
+ * the slices hold the last sample played (zero after boot = silence).
+ * Calling audio_set_fill_callback(NULL) re-enters this silent state.
  */
 
 #ifndef AUDIO_H_INCLUDED
@@ -42,22 +51,22 @@ extern "C" {
 #endif
 
 /* Per-VBL fill callback. The library invokes this from
- * audio_render_frame() with `buf` pointing into the cart audio
- * buffer and `bytes` set to the m68k's per-VBL consumption rate
- * (currently 224 = 112 samples * 2 B/sample at Timer-B 5,585 Hz).
- * The callback must write exactly that many bytes; the library
- * does not zero on entry.
+ * audio_render_frame() with `buf` pointing into its FIFO and `bytes`
+ * set to the m68k's per-VBL consumption (currently 224 = 112 samples *
+ * 2 B/sample at Timer-B 5,585 Hz). The callback must write exactly that
+ * many bytes; the library does not zero on entry.
  *
- * Called from the main loop at ~50 Hz; must not block. */
+ * Called from the main loop, as many times as the FIFO has room (once per
+ * VBL on average); it may read the SD card, and must not block for long. */
 typedef void (*audio_fill_cb_t)(uint8_t *buf, uint32_t bytes);
 
 /* Initialise the cart audio buffer pointer; clear any previously
  * installed callback. Call once during boot. */
 void audio_init(void);
 
-/* Drain the per-VBL pacing timer and (if a callback is installed)
- * invoke it to refill the cart buffer. Call once per main-loop
- * iteration; the internal time_us_32 pacing throttles to ~50 Hz. */
+/* Top up the FIFO through the fill callback (if one is installed). Call
+ * once per main-loop iteration; more often does no harm. The slices
+ * themselves are written from a timer interrupt, on the ST's VBLs. */
 void audio_render_frame(void);
 
 /* Install (or clear, if cb == NULL) the fill callback. */
@@ -86,7 +95,7 @@ void audio_play_loop(const uint8_t *data, uint32_t bytes);
  *   off 16:  raw byte body         streamed to the cart buffer
  *
  * The library opens the file, validates the header, and installs a
- * callback that reads from the file on every per-VBL refill. SD is
+ * callback that reads one VBL of samples from the file at a time. SD is
  * assumed mounted; call after sdcard_initFilesystem(). The file
  * loops at EOF (cursor wraps back to the data start).
  *

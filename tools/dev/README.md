@@ -115,9 +115,11 @@ python3 tools/dev/swd.py resume                                  # release cores
 
 `counters` reads, without halting: the ST's hellos, the frames published, the blits the ST
 acknowledged, the publishes that gave up waiting for an acknowledgement (`fbAckTimeouts`: expected
-until the ST runs the app, never while it does), the IKBD bytes the keyboard ACIA lost and the ROM3
-ring's overruns. `--watch SECONDS` prints what changed, with the frame and blit rates: 50 a second
-each while the ST runs the app and the app publishes every frame.
+until the ST runs the app, never while it does), the IKBD bytes the keyboard ACIA lost, the ROM3
+ring's overruns, and the audio slices written, late (`audioLateSlices`) and underrun
+(`audioUnderruns`). `--watch SECONDS` prints what changed, with the frame, blit and audio slice
+rates: frames and blits run at 50 a second while the ST runs the app and the app publishes every
+frame; audio slices run at 50 a second whatever the frame rate.
 
 `fb` writes the framebuffer as the ST shows it, in colour: it undoes the reversed 48-byte chunks
 the m68k's MOVEM blit needs, decodes the low-resolution planes and applies the published palette.

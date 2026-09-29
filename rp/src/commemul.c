@@ -101,6 +101,25 @@ int commemul_init(void) {
   return 0;
 }
 
+bool __not_in_flash_func(commemul_latest)(uint16_t mask, uint16_t match,
+                                          uint32_t max_back, uint16_t *sample) {
+  if (!commInitialized) {
+    return false;
+  }
+  uint32_t idx = ((dma_hw->ch[commDmaChannel].write_addr - (uint32_t)commRing) /
+                  sizeof(uint16_t)) &
+                 COMM_RING_MASK;
+  for (uint32_t back = 0; back < max_back; back++) {
+    idx = (idx - 1u) & COMM_RING_MASK;
+    uint16_t value = commRing[idx];
+    if ((value & mask) == match) {
+      *sample = value;
+      return true;
+    }
+  }
+  return false;
+}
+
 void __not_in_flash_func(commemul_poll)(CommEmulSampleCallback callback) {
   if ((!commInitialized) || (callback == NULL)) {
     return;

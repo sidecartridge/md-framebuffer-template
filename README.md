@@ -300,8 +300,10 @@ your own graphics.
 
 ## 5. Audio (`audio.h`)
 
-The firmware streams a 1 KB cart buffer to the YM2149 every VBL. You
-supply the bytes one of two ways.
+The ST plays one VBL of samples from a 1 KB cart buffer into the YM2149
+every VBL, and the RP writes the next ones from a timer interrupt, so the
+sound never tears and never repeats, whatever your frame rate. You supply
+the bytes one of two ways.
 
 ### Loop a baked-in buffer
 
@@ -316,9 +318,9 @@ audio_play_loop(audio_sample_data, sizeof(audio_sample_data));
 
 ### Generate audio live (callback)
 
-For dynamic sound, install a fill callback. The library calls it once per
-VBL with the exact byte count the m68k will consume (224 = 112 stereo
-samples at ~5,585 Hz):
+For dynamic sound, install a fill callback. The library calls it for each
+VBL of samples it needs, with the exact byte count the m68k will consume
+(224 = 112 two-channel samples at ~5,585 Hz):
 
 ```c
 static void my_fill(uint8_t *buf, uint32_t bytes) {
@@ -327,9 +329,12 @@ static void my_fill(uint8_t *buf, uint32_t bytes) {
 audio_set_fill_callback(my_fill);   // pass NULL for silence
 ```
 
-Either way, **`audio_render_frame()` must be called each loop iteration**
-(it self-paces to ~50 Hz). There's also `audio_play_yms_file(path)` to
-stream a `.YMS` file from SD — see §6.
+Either way, **`audio_render_frame()` must be called each loop iteration**:
+it tops up a small FIFO (4 VBLs of samples) that the interrupt plays from.
+Your loop may take up to 80 ms between two calls without the sound
+noticing; a sample reaches the speaker at most 120 ms after your callback
+made it. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
+from SD — see §6.
 
 ---
 

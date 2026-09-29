@@ -93,6 +93,9 @@ UFW_LAST_FRAME        equ $00077FF0          ; word
 ; wait when the VBL handler has cleared the flag. It used to borrow
 ; TOS's _dskbufp ($4C6); it lives in userfw's own state area now.
 UFW_VBL_FLAG          equ $00077FF2          ; word: cleared by userfw_vbl, polled after each `stop`
+; The audio slice Timer-B plays this frame (0..AUDIO_SLICES-1); userfw_vbl
+; moves to the next one at every VBL.
+UFW_AUDIO_SLICE       equ $00077FF4          ; word
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -220,14 +223,14 @@ UFW_SCREEN_A          equ $00070000
 UFW_SCREEN_B          equ $00078000
 UFW_SCREEN_XOR        equ (UFW_SCREEN_A ^ UFW_SCREEN_B)
 
-; --- YM2149 sound chip (single-channel A 4-bit DAC) ----------------
+; --- YM2149 sound chip (channels A and B as a fake DAC) --------------
 ;
 ; PSG access: write a register number to $FFFF8800 (latch), then
-; write data to $FFFF8802. Reg 8 = ch A volume (low 4 bits). We
-; configure ch A as a "fake DAC": tone enabled, period = 0 (DC
-; clamp above the audio band so the volume register is the only
-; thing driving the output). Reg 8 stays latched after boot, so the
-; Timer-B handler just writes a single byte to YM_DATA per fire.
+; write data to $FFFF8802. Regs 8 and 9 = ch A and ch B volume (low 4
+; bits). Both channels are a "fake DAC": tone enabled, period = 0 (DC
+; clamp above the audio band so the volume registers are the only
+; thing driving the output). Reg 8 is latched at boot; each Timer-B
+; fire writes ch A, latches reg 9, writes ch B and latches reg 8 again.
 YM_SELECT             equ $FFFF8800
 YM_DATA               equ $FFFF8802
 YM_REG_MIXER          equ 7                  ; tone+noise enables
@@ -302,18 +305,18 @@ MFP_TACR              equ $FFFFFA19          ; Timer-A control register (cleared
 MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (delay-mode + prescaler)
 MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit countdown)
 
-; Timer-B audio rate. MFP master clock = 2.4576 MHz. We pick a /4
-; prescaler with count 110:
+; Timer-B audio rate, and everything that follows from it. MFP master
+; clock = 2.4576 MHz, /4 prescaler, count 110:
 ;   f = 2.4576 MHz / (4 * 110) = 5,585.45 Hz
-; (~10.9% slower than STE-low's 6,258 Hz). The count was raised from
-; 98 -> 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 macro;
-; sample.h is still generated at the older 6,269 Hz rate, so the
-; jingle plays back ~11% lower pitch (about 2 semitones down) -- a
-; modest but audible detune. Regenerate sample.h at 5585 Hz via
-; wav_to_ym4.py if exact pitch matters. PAL VBL = 49.92 Hz so
-; ~111.71 samples/VBL. At 2 bytes per sample (dual-ghost LUT) that's
-; ~223 bytes/VBL in the cart buffer (audio.c's AUDIO_BYTES_PER_VBL
-; = 224 matches this).
+; (~10.9% slower than STE-low's 6,258 Hz; the count was raised from 98
+; to 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 blit).
+;   -> 111.7 samples per PAL VBL, 2 bytes each (vA, vB): 224 bytes per
+;      VBL (AUDIO_FILL_BYTES_PER_VBL in rp/src/audio.c), one audio slice
+;      of AUDIO_SLICE_BYTES (inc/sidecart_layout.s);
+;   -> the RP's rate AUDIO_NATIVE_RATE_HZ (audio.c), the rate .YMS files
+;      must carry, and the rate the built-in jingle (audio_sample.h) is
+;      converted at (tools/wav_to_ym4.py --target-rate 5585).
+; tests/host/test_layout.py checks that those places agree.
 TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
 TIMERB_COUNT          equ 110                ; ~5,585 Hz (~112 samples/PAL VBL)
 
@@ -592,11 +595,13 @@ userfw:
     move.b  #TIMERB_COUNT, MFP_TBDR.w
     move.b  #TIMERB_PRESCALER, MFP_TBCR.w
 
-    ; Initialise A0 to the audio buffer base for the Timer-B handler.
+    ; Initialise A0 to the first audio slice for the Timer-B handler.
     ; A0 is NOT in the FBDRV_INLINE MOVEM list and no other code in
-    ; userfw touches it after this point, so the handler can rely on
+    ; userfw touches it after this point (userfw_vbl moves it to the next
+    ; slice with the interrupts masked), so the handler can rely on
     ; A0 holding a valid cart-buffer pointer at all times -- saves
     ; the push/pop around it in the hot IRQ path (-24 cyc/fire).
+    clr.w   UFW_AUDIO_SLICE
     movea.l #AUDIO_BUFFER_ADDR, a0
 
     bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
@@ -799,12 +804,12 @@ userfw:
 
 ; -------------------------------------------------------------------
 ; userfw_vbl -- VBL interrupt handler. Two jobs:
-;   1. Reset A0 to AUDIO_BUFFER_ADDR. This is the cart-buffer base,
-;      and Timer-B will start consuming samples from offset 0 on
-;      the next IRQ. Pinning A0 = base once per VBL eliminates the
-;      explicit `cmpa.l + bcs.s` wrap in the Timer-B hot path, so
-;      that handler shrinks to a single `move.b (a0)+, YM_DATA.w`
-;      + rte. A0 is dedicated to audio (excluded from the
+;   1. Point A0 at the next audio slice (AUDIO_BUFFER_ADDR + slice *
+;      AUDIO_SLICE_BYTES) and tell the RP which slice plays now.
+;      Timer-B consumes samples from the slice's start on the next IRQ.
+;      Moving A0 once per VBL eliminates the explicit `cmpa.l + bcs.s`
+;      wrap in the Timer-B hot path, so that handler stays a few
+;      moves + rte. A0 is dedicated to audio (excluded from the
 ;      FBDRV_INLINE MOVEM list and from the ACIA handler), so it's
 ;      safe to overwrite here from IRQ context.
 ;   2. Clear UFW_VBL_FLAG so .vbl_loop's `stop`-then-check wait can
@@ -815,7 +820,25 @@ userfw:
 ; firing. The ACIA IRQ ($118) is userfw's own (userfw_acia_irq), so
 ; GEMDOS's keyboard buffer is no longer filled; the keys go to the RP.
 userfw_vbl:
+    ; Move Timer-B to the next audio slice and tell the RP which one: a ROM3
+    ; read at AUDIO_SLICE_WINDOW + the slice. The RP writes only the slices
+    ; after it. Timer-B (IPL 6) can interrupt this handler (IPL 4), and it
+    ; reads a sample through A0: masked here, it never sees A0 anywhere but
+    ; on a slice. This handler interrupts the blit between a MOVEM load and
+    ; its store, when every register but A0 and A7 holds pixels: D0 is saved.
+    ; About 25 us per VBL; a Timer-B sample waits at most that long.
+    move.w  #$2700, sr
+    move.l  d0, -(sp)
+    move.w  UFW_AUDIO_SLICE, d0
+    addq.w  #1, d0
+    and.w   #AUDIO_SLICES-1, d0
+    move.w  d0, UFW_AUDIO_SLICE
+    movea.l #AUDIO_SLICE_WINDOW, a0
+    tst.b   (a0, d0.w)
+    lsl.w   #AUDIO_SLICE_SHIFT, d0
     movea.l #AUDIO_BUFFER_ADDR, a0
+    adda.w  d0, a0
+    move.l  (sp)+, d0
     clr.w   UFW_VBL_FLAG
     rte
 
@@ -832,8 +855,8 @@ userfw_vbl:
 ;   3. Write vB to YM ch B vol.
 ;   4. Re-latch reg 8 so the next fire writes ch A immediately.
 ;
-; A0 is a DEDICATED cart audio-buffer cursor (userfw_vbl resets it
-; to AUDIO_BUFFER_ADDR each VBL; postinc walks 2 bytes/fire).
+; A0 is a DEDICATED cart audio-buffer cursor (userfw_vbl points it at
+; the next audio slice each VBL; postinc walks 2 bytes/fire).
 ;
 ; MFP is in auto-EOI mode (VR S=0) so the in-service bit clears
 ; automatically on each IACK cycle.

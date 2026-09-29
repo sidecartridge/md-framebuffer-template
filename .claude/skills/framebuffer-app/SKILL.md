@@ -89,8 +89,9 @@ fb_publish();                                  // once per frame, after drawing
 ikbd_key_event_t k; while (ikbd_pop_key(&k)) { if (k.is_press) ... }  // k.scancode
 // audio: audio.h
 audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
-audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL, live
-audio_render_frame();                          // call every loop iteration
+audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL of samples, live
+audio_render_frame();                          // every loop iteration: tops up the FIFO
+                                               // (80 ms of stall allowed, 120 ms latency)
 ```
 
 **SD card:** the microSD is already mounted at boot

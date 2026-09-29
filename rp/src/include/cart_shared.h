@@ -78,11 +78,17 @@
 /* Audio sample buffer: (vA, vB) YM2149 volume pairs, two bytes per
  * sample for channels A and B. The m68k Timer-B IRQ handler fires at
  * ~5,585 Hz and reads one pair per fire; its VBL handler points the read
- * cursor back at the start every VBL, so a frame reads the first ~224
- * bytes. The RP-side audio.c refills them once per VBL. */
+ * cursor at the start of the next slice every VBL (below), so a frame reads
+ * the first ~224 bytes of one slice. */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
 #define CART_AUDIO_BUFFER_SIZE           1024
+/* The buffer is CART_AUDIO_SLICES slices of one VBL each. The ST's VBL
+ * handler moves Timer-B to the next slice and reports which one through
+ * CART_ROM3_AUDIO_SLICE_WINDOW; the RP writes only the slices after it
+ * (audio.c). A VBL plays about 224 bytes of a slice's 256. */
+#define CART_AUDIO_SLICES                4
+#define CART_AUDIO_SLICE_BYTES           256
 
 /* Boot block, after the audio buffer. The ST reads the status word once
  * per boot, in pre_auto, before it starts userfw: CART_BOOT_OK (0, which
@@ -190,11 +196,14 @@
  *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
  *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
  *   $FB8500  the keyboard ACIA overran: IKBD bytes were lost (ikbd.c)
+ *   $FB86xx  VBL: Timer-B plays audio slice xx from now on (audio.c)
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
  *   $FB8Axx  TOS version, low byte; sent just before the hello */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
+#define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
 #define CART_ROM3_IKBD_OVERRUN_WINDOW 0x8500u
+#define CART_ROM3_AUDIO_SLICE_WINDOW 0x8600u
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u

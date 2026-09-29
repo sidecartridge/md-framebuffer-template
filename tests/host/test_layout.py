@@ -96,6 +96,7 @@ def st_names():
 def rp_names():
     inc = os.path.join(RP_SRC, "include")
     return c_defines(os.path.join(inc, "cart_shared.h"), os.path.join(inc, "ikbd.h"),
+                     os.path.join(inc, "audio_sample.h"),
                      os.path.join(RP_SRC, "fb.c"), os.path.join(RP_SRC, "audio.c"))
 
 
@@ -143,6 +144,9 @@ PAIRS = [
      lambda rp: rp["CART_AUDIO_BUFFER_OFFSET"]),
     ("audio buffer size", lambda st: st["AUDIO_BUFFER_SIZE"],
      lambda rp: rp["CART_AUDIO_BUFFER_SIZE"]),
+    ("audio slices", lambda st: st["AUDIO_SLICES"], lambda rp: rp["CART_AUDIO_SLICES"]),
+    ("audio slice size", lambda st: st["AUDIO_SLICE_BYTES"],
+     lambda rp: rp["CART_AUDIO_SLICE_BYTES"]),
     # The boot block the ST reads in pre_auto.
     ("boot status", lambda st: window(st, "BOOT_STATUS_ADDR"),
      lambda rp: rp["CART_BOOT_STATUS_OFFSET"]),
@@ -169,6 +173,10 @@ PAIRS = [
      lambda rp: rp["IKBD_WINDOW_LO16"]),
     ("blit-done window", lambda st: rom3(st, "VBLSYNC_ADDR"),
      lambda rp: rp["FB_VBLSYNC_HIBYTE"]),
+    ("blit-done window (cart_shared.h)", lambda st: rom3(st, "VBLSYNC_ADDR"),
+     lambda rp: rp["CART_ROM3_BLIT_DONE_WINDOW"]),
+    ("audio slice window", lambda st: rom3(st, "AUDIO_SLICE_WINDOW"),
+     lambda rp: rp["CART_ROM3_AUDIO_SLICE_WINDOW"]),
     ("ACIA overrun window", lambda st: rom3(st, "IKBD_OVERRUN_ADDR"),
      lambda rp: rp["CART_ROM3_IKBD_OVERRUN_WINDOW"]),
     ("hello window", lambda st: rom3(st, "ST_HELLO_WINDOW"),
@@ -181,6 +189,9 @@ PAIRS = [
     ("audio sample rate (Hz)", lambda st: round(
         MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
      lambda rp: rp["AUDIO_NATIVE_RATE_HZ"]),
+    ("built-in jingle's sample rate (Hz)", lambda st: round(
+        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
+     lambda rp: rp["AUDIO_SAMPLE_RATE_HZ"]),
 ]
 
 
@@ -203,6 +214,17 @@ class Layout(unittest.TestCase):
                         f"{rp['AUDIO_FILL_BYTES_PER_VBL']} bytes per frame for "
                         f"{samples:.1f} samples")
         self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_BUFFER_SIZE"])
+
+    def test_audio_slices(self):
+        """The slices fill the audio buffer, a VBL of samples fits in one,
+        and the ST's shift is the slice size."""
+        st, rp = st_names(), rp_names()
+        self.assertEqual(rp["CART_AUDIO_SLICES"] * rp["CART_AUDIO_SLICE_BYTES"],
+                         rp["CART_AUDIO_BUFFER_SIZE"])
+        self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_SLICE_BYTES"])
+        self.assertEqual(1 << st["AUDIO_SLICE_SHIFT"], st["AUDIO_SLICE_BYTES"])
+        slices = rp["CART_AUDIO_SLICES"]
+        self.assertEqual(slices & (slices - 1), 0, "the ST masks the slice number")
 
     def test_window_blocks_in_order(self):
         """The blocks do not overlap, and the framebuffer ends the window."""
