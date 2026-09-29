@@ -68,3 +68,6 @@ __pycache__/
 # Host-side developer tools: capture and build output
 tools/dev/logs/
 tools/dev/builds/
+
+# Host tests: build output
+tests/host/build/

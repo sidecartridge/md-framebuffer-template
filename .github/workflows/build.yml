@@ -34,6 +34,11 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt update
           sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential
 
+    # The firmware's pure logic, on the host, in seconds (tests/host/Makefile):
+    # a failing check fails the pull request before the firmware is built.
+    - name: Host tests
+      run: make -C tests/host test
+
     - name: Cache the ARM GNU Toolchain
       id: arm-toolchain
       uses: actions/cache@v4
