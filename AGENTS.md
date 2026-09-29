@@ -32,6 +32,15 @@ PICO_TOOLCHAIN_PATH=/Applications/ArmGNUToolchain/14.2.rel1/arm-none-eabi/bin \
   ./build.sh pico_w release 123e4567-e89b-12d3-a456-426614174000
 ```
 
+With the Debug Probe attached (SWD and the debug UART), `tools/dev/` builds, flashes and verifies the RP, captures its console and reads or drives it from the host (see `tools/dev/README.md`):
+```bash
+python3 tools/dev/console.py watch                 # console capture, leave running
+tools/dev/flash.sh debug                           # build out of tree, flash, verify over SWD
+python3 tools/dev/swd.py counters --watch 2        # frames, blits, overruns per second
+python3 tools/dev/swd.py fb screen.png             # what the ST shows, as a PNG
+python3 tools/dev/tools_harness.py --build --flash --reset
+```
+
 ## 3. Build Notes & Gotchas
 - `CHARACTER_GAP_MS` constant lives in `rp/src/include/blink.h`. Keep it defined (700 ms) or the RP build fails.
 - Expect harmless VASM warnings (`target data type overflow`, `trailing garbage after option -D`).
