@@ -30,7 +30,7 @@ cp -a rp rp.bak
 
 echo "Removing demo sources + asset headers ..."
 rm -f rp/src/demo_menu.c rp/src/demo_parallax.c rp/src/demo_3d.c \
-      rp/src/demo_sprites.c rp/src/demo_cojorotozoom.c
+      rp/src/demo_sprites.c rp/src/demo_cojorotozoom.c rp/src/demo_input.c
 rm -f rp/src/include/demo.h \
       rp/src/include/sidecart_logo.h rp/src/include/sidecart_text.h \
       rp/src/include/solid3d.h rp/src/include/sprites_data.h \

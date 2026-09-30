@@ -43,7 +43,9 @@
  *                                        is unchanged since the
  *                                        previous iteration)
  *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots,
- *                                        app-free).
+ *                                        app-free, but for slots 2..5:
+ *                                        commands for the IKBD, and
+ *                                        slots 12..19: the palette).
  *   $FA4100  AUDIO_BUFFER       1024 B (YM volume pairs)
  *   $FA4500  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
  *   $FA4502  BOOT_MESSAGE     126 B  (why the RP refused to start)
@@ -57,6 +59,21 @@
 #define CART_FB_FRAME_COUNTER_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x0C)
 #define CART_SHARED_VARIABLES_OFFSET     (CART_SHARED_BLOCK_OFFSET + 0x10)
 #define CART_SHARED_VARIABLES_SLOTS      60      /* 240 bytes total */
+
+/* Commands for the IKBD, from the RP (ikbd.c): slots 2..5 of
+ * SHARED_VARIABLES. A generation word, a length word and up to
+ * CART_IKBD_OUT_MAX command bytes, two to a word, the first in the word's
+ * high byte (what the m68k reads first). The ST reads the generation every
+ * VBL; when it changes, the ST sends the bytes to the IKBD, one per VBL (a 0
+ * sends nothing that VBL), then reports the generation's low byte through
+ * CART_ROM3_IKBD_OUT_WINDOW. The RP sets CART_IKBD_OUT_BUSY in the
+ * generation while it rewrites the block, and clears it with the new
+ * generation last. */
+#define CART_IKBD_OUT_OFFSET                                                  \
+  (CART_SHARED_VARIABLES_OFFSET + (2 * 4))       /* $4018 */
+#define CART_IKBD_OUT_SIZE               16
+#define CART_IKBD_OUT_MAX                (CART_IKBD_OUT_SIZE - 4)
+#define CART_IKBD_OUT_BUSY               0x8000u
 
 /* 16-entry ST palette published by the RP, applied by the m68k VBL
  * handler to $FFFF8240..$FFFF825E each frame. Format: 16 contiguous
@@ -194,19 +211,28 @@
  * target/atarist/src/inc/sidecart_layout.s.
  *
  *   $FB82xx  an IKBD byte (ikbd.c, IKBD_WINDOW_LO16)
+ *   $FB83xx  VBL: the ST has read xx IKBD bytes so far, mod 256 (ikbd.c)
  *   $FB84xx  blit done: the cart framebuffer is free (fb.c)
  *   $FB8500  the keyboard ACIA overran: IKBD bytes were lost (ikbd.c)
  *   $FB86xx  VBL: Timer-B plays audio slice xx from now on (audio.c)
+ *   $FB87xx  the ST sent the IKBD commands of generation xx (low byte)
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
- *   $FB8Axx  TOS version, low byte; sent just before the hello */
+ *   $FB8Axx  TOS version, low byte; sent just before the hello
+ *   $FB8Bxx  when the blit ended, in Timer-B counts after the VBL, high byte
+ *            ($FFFF: after the next VBL); userfw.s FB_SLACK_REPORT (fb.c)
+ *   $FB8Cxx  the same, low byte; sent just after the high byte */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
+#define CART_ROM3_IKBD_COUNT_WINDOW  0x8300u
 #define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
 #define CART_ROM3_IKBD_OVERRUN_WINDOW 0x8500u
 #define CART_ROM3_AUDIO_SLICE_WINDOW 0x8600u
+#define CART_ROM3_IKBD_OUT_WINDOW    0x8700u
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u
+#define CART_ROM3_FB_SLACK_HI_WINDOW 0x8B00u
+#define CART_ROM3_FB_SLACK_LO_WINDOW 0x8C00u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.

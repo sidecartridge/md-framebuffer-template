@@ -126,6 +126,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         fb_font.c
         gconfig.c
         ikbd.c
+        ikbd_demux.c
         hw_config.c
         palette.c
         demo_menu.c
@@ -133,6 +134,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         demo_3d.c
         demo_sprites.c
         demo_cojorotozoom.c
+        demo_input.c
         reset.c
         romemul.c
         sdcard.c

@@ -13,6 +13,7 @@
 ;   $FA4008  RANDOM_TOKEN_SEED_ADDR     4 B   (legacy: the senders' handshake)
 ;   $FA400C  FB_FRAME_COUNTER_ADDR      4 B   bumped as the last write of a publish
 ;   $FA4010  SHARED_VARIABLES           240 B (60 x 4-byte slots, the app's)
+;   $FA4018  IKBD_OUT_ADDR              16 B  (slots 2..5: IKBD commands from the RP)
 ;   $FA4040  PALETTE_ADDR               32 B  (slots 12..19: 16 palette words)
 ;   $FA4100  AUDIO_BUFFER_ADDR          1024 B (YM volume pairs)
 ;   $FA4500  BOOT_STATUS_ADDR           2 B   read once in pre_auto: 0 = start
@@ -31,6 +32,20 @@ RANDOM_TOKEN_SEED_ADDR  equ (RANDOM_TOKEN_ADDR + 4)                    ; $FA4008
 ; its low word has changed since the last blit.
 FB_FRAME_COUNTER_ADDR   equ (RANDOM_TOKEN_SEED_ADDR + 4)               ; $FA400C
 SHARED_VARIABLES        equ (FB_FRAME_COUNTER_ADDR + 4)                ; $FA4010
+
+; Commands for the IKBD from the RP (its input modes, rp/src/ikbd.c): a generation
+; word, a length word and up to IKBD_OUT_MAX command bytes. Whenever the
+; generation changes, userfw sends the bytes to the IKBD, one per VBL (a 0
+; sends nothing that VBL), then reports the generation's low byte at
+; IKBD_OUT_WINDOW. Bit 15 of the generation is set while the RP rewrites
+; the block. Slots 2..5 of SHARED_VARIABLES.
+IKBD_OUT_ADDR           equ (SHARED_VARIABLES + (2 * 4))               ; $FA4018
+IKBD_OUT_GEN            equ IKBD_OUT_ADDR                              ; word
+IKBD_OUT_LEN            equ (IKBD_OUT_ADDR + 2)                        ; word
+IKBD_OUT_BYTES          equ (IKBD_OUT_ADDR + 4)                        ; IKBD_OUT_MAX bytes
+IKBD_OUT_SIZE           equ 16
+IKBD_OUT_MAX            equ (IKBD_OUT_SIZE - 4)
+IKBD_OUT_BUSY_BIT       equ 15
 
 ; 16-entry ST palette, published by the RP and applied by userfw every VBL.
 ; Slots 12..19 of SHARED_VARIABLES.
@@ -82,9 +97,13 @@ CMD_START               equ 4           ; hand control to the user firmware (USE
 ; address says what the read means, the low byte carries a value.
 ROMCMD_START_ADDR       equ $FB0000
 IKBD_WINDOW_BASE        equ (ROMCMD_START_ADDR + $8200)  ; + an IKBD byte
+IKBD_COUNT_WINDOW       equ (ROMCMD_START_ADDR + $8300)  ; + IKBD bytes read so far, low byte (every VBL)
 VBLSYNC_ADDR            equ (ROMCMD_START_ADDR + $8400)  ; blit done: the framebuffer is free
 IKBD_OVERRUN_ADDR       equ (ROMCMD_START_ADDR + $8500)  ; the keyboard ACIA overran
 AUDIO_SLICE_WINDOW      equ (ROMCMD_START_ADDR + $8600)  ; + the audio slice playing from this VBL
+IKBD_OUT_WINDOW         equ (ROMCMD_START_ADDR + $8700)  ; + low byte of the IKBD command generation sent
 ST_HELLO_WINDOW         equ (ROMCMD_START_ADDR + $8800)  ; + the machine: hello, a new session
 ST_TOS_HI_WINDOW        equ (ROMCMD_START_ADDR + $8900)  ; + TOS version, high byte
 ST_TOS_LO_WINDOW        equ (ROMCMD_START_ADDR + $8A00)  ; + TOS version, low byte
+FB_SLACK_HI_WINDOW      equ (ROMCMD_START_ADDR + $8B00)  ; + when the blit ended, high byte (FB_SLACK_REPORT)
+FB_SLACK_LO_WINDOW      equ (ROMCMD_START_ADDR + $8C00)  ; + when the blit ended, low byte

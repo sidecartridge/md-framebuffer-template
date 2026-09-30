@@ -16,6 +16,7 @@ Usage:
     python3 tools/dev/swd.py resume
     python3 tools/dev/swd.py reset
     python3 tools/dev/swd.py counters [--elf ELF] [--watch SECONDS]
+    python3 tools/dev/swd.py ikbd-log OUT [--seconds S] [--elf ELF]
     python3 tools/dev/swd.py heap [--elf ELF] [--watch SECONDS] [--csv FILE]
     python3 tools/dev/swd.py select short|long|release [--hold-ms MS] [--force]
     python3 tools/dev/swd.py key KEY... [--press | --release] [--elf ELF]
@@ -37,12 +38,22 @@ resets it. Both reset the whole chip through the watchdog, never with OpenOCD's
 
 `counters` reads the firmware's counters while it runs: the ST's hellos
 (st_session.c), the frames published and the blits the ST acknowledged, the
-publishes that gave up waiting for an acknowledgement (fb.c), the IKBD bytes
-the keyboard ACIA lost (ikbd.c), the ROM3 ring's overruns (commemul.c), and
-the audio slices written, late and underrun (audio.c). With --watch it prints
-what changed every SECONDS, with rates: while the ST runs userfw and the app
-publishes every frame, frames and blits run at 50 a second; audio slices do
-whatever the frame rate.
+publishes that gave up waiting for an acknowledgement (fb.c), the keyboard
+ACIA's overruns, the IKBD bytes and packets decoded, the decoder's resyncs and
+how many of them were byte-count mismatches (ikbd.c, ikbd_demux.h), the ROM3
+ring's overruns (commemul.c), and the audio slices written, late and underrun
+(audio.c). With --watch it prints what changed every SECONDS, with rates:
+while the ST runs userfw and the app publishes every frame, frames and blits
+run at 50 a second; audio slices do whatever the frame rate.
+`ikbd-log` (debug builds) records every sample the IKBD decoder sees, in
+order, for S seconds (Ctrl-C ends it early), into OUT, one 16-bit sample per
+line in hex: the ROM3 window in the high byte ($82 an IKBD byte, $83 the ST's
+byte count at a VBL, $85 an ACIA overrun, $87 the input mode, $88 a hello;
+$01 a byte a host tool typed) and the value in the low byte. It reads the
+firmware's log (ikbdLog, 2048 samples, 2.4 s of a mouse moved flat out)
+several times a second and says how many samples it missed. At the end it
+checks the recording on its own, without the decoder: the IKBD bytes between
+two counts must be what the ST says it read.
 `heap` reads newlib's malloc state: the heap's size, its peak and the free
 space inside it. Without --elf, both use the cached ELF whose build ID the RP
 carries (tools/dev/builds/elf, filled by flash.sh).
@@ -57,11 +68,11 @@ and needs `--force`, because it is a factory reset (reset_deviceAndEraseFlash).
 `key` and `app` need a debug build: they write the debug mailbox
 (rp/src/include/devhooks.h) and wait until the main loop acknowledges it.
 `key` types on the ST's keyboard: each KEY (a scancode such as 0x02, or a
-name: esc, return, space, up, down, left, right, 1-0, a-z...) is pressed and
+name: esc, return, space, up, down, left, right, 1-0, a-z, f1-f10...) is pressed and
 released, and the bytes enter where the ST's own do, so the app cannot tell
 the difference. `app` sends a command named by a DEVHOOKS_APP_<NAME> define in
 rp/src/include, with optional 16-bit words: the demo dispatcher has `demo N`,
-`menu`, `overlay 0|1` and `slow_frame MS` (demo.h).
+`menu`, `overlay 0|1`, `slow_frame MS` and `input_mode 0-3` (demo.h).
 
 `fb` writes the framebuffer as the ST shows it, in colour, as a PNG: it waits
 for the next complete frame (a watchpoint on the frame counter stops core 0
@@ -99,6 +110,7 @@ import glob
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -127,13 +139,19 @@ COUNTERS = (("stSessionHellos", "ST hellos"),
             ("fb_frame_tick", "frames published"),
             ("s_vbl_seen", "blits acknowledged"),
             ("fbAckTimeouts", "publishes that timed out"),
-            ("ikbdOverruns", "IKBD bytes lost"),
+            ("ikbdOverruns", "IKBD ACIA overruns"),
+            ("ikbdBytes", "IKBD bytes"),
+            ("ikbdMousePackets", "mouse packets"),
+            ("ikbdJoystickPackets", "joystick packets"),
+            ("ikbdResyncs", "IKBD resyncs"),
+            ("ikbdCountMismatches", "IKBD count mismatches"),
+            ("ikbdPowerUps", "IKBD power-ups"),
             ("commOverruns", "ROM3 ring overruns"),
             ("audioSlicesWritten", "audio slices written"),
             ("audioLateSlices", "audio slices late"),
             ("audioUnderruns", "audio underruns"))
 # Counters that --watch also prints as a rate.
-RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen", "audioSlicesWritten")
+RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen", "audioSlicesWritten", "ikbdBytes")
 # Variables postmortem prints when the ELF has them; a build without one
 # simply lacks it. Add the app's own here.
 POSTMORTEM_VARIABLES = tuple(n for n, _ in COUNTERS) + ("s_vbl_published",
@@ -152,6 +170,7 @@ SCANCODES = {"esc": 0x01, "backspace": 0x0E, "tab": 0x0F, "return": 0x1C,
              "right": 0x4D, "help": 0x62, "undo": 0x61}
 SCANCODES.update({str(n % 10): 0x01 + n for n in range(1, 11)})
 SCANCODES.update(zip("qwertyuiop", range(0x10, 0x1A)))
+SCANCODES.update({f"f{n}": 0x3A + n for n in range(1, 11)})
 SCANCODES.update(zip("asdfghjkl", range(0x1E, 0x27)))
 SCANCODES.update(zip("zxcvbnm", range(0x2C, 0x33)))
 CART_SHARED_H = os.path.join(INCLUDE_DIR, "cart_shared.h")
@@ -845,6 +864,99 @@ def cmd_counters(args: argparse.Namespace) -> int:
         return 0
 
 
+def ikbd_log_summary(samples: list[int], missed: int) -> str:
+    """What a recording holds, and the ST's byte counts checked against the
+    IKBD bytes between them. A gap in the recording restarts the check."""
+    kinds = {0x82: 0, 0x83: 0, 0x85: 0, 0x87: 0, 0x88: 0, 0x01: 0}
+    base = None
+    checked = mismatches = 0
+    for s in samples:
+        if s is None:
+            base = None
+            continue
+        window, value = s >> 8, s & 0xFF
+        kinds[window] = kinds.get(window, 0) + 1
+        if window == 0x82 and base is not None:
+            base = (base + 1) & 0xFF
+        elif window == 0x83:
+            if base is not None:
+                checked += 1
+                mismatches += base != value
+            base = value
+        elif window == 0x88:
+            base = None
+    return (f"{len([s for s in samples if s is not None])} samples, "
+            f"{missed} missed: {kinds[0x82]} IKBD bytes, {kinds[0x83]} counts, "
+            f"{kinds[0x85]} overruns, {kinds[0x87]} mode reports, "
+            f"{kinds[0x88]} hellos, {kinds[0x01]} typed by a host tool; "
+            f"{checked} counts checked, {mismatches} wrong")
+
+
+class IkbdLog:
+    """The firmware's IKBD log (ikbdLog, debug builds), read while it runs."""
+
+    def __init__(self, elf: str):
+        sym = elf_symbols(elf, "ikbdLog", "ikbdLogCount")
+        if "ikbdLog" not in sym or "ikbdLogCount" not in sym:
+            raise SwdError(f"{os.path.basename(elf)} has no IKBD log "
+                           "(debug builds have one)")
+        self.addr, self.size = sym["ikbdLog"]
+        self.entries = self.size // 2
+        self.count_addr = sym["ikbdLogCount"][0]
+        self.pattern = re.compile(rf"0x{self.count_addr:08x}:\s+([0-9a-fA-F]{{8}})")
+        self.seen = None
+        self.missed = 0
+
+    def poll(self) -> list[int | None]:
+        """The samples written since the last poll, a None where some were
+        missed (or the RP restarted)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "log.bin")
+            # The count, the log, the count: the samples written before the
+            # first read and not overwritten before the second are the ones
+            # the dump holds for sure.
+            out = openocd(f"targets {CORES[0]}", f"mdw 0x{self.count_addr:08x}",
+                          f"dump_image {path} 0x{self.addr:08x} {self.size}",
+                          f"mdw 0x{self.count_addr:08x}")
+            with open(path, "rb") as f:
+                data = f.read()
+        before, after = (int(v, 16) for v in self.pattern.findall(out)[:2])
+        batch: list[int | None] = []
+        if self.seen is None or before < self.seen:
+            if self.seen is not None:
+                batch.append(None)
+            self.seen = before
+        first = max(self.seen, after - self.entries)
+        if first > self.seen:
+            self.missed += first - self.seen
+            batch.append(None)
+        for n in range(first, before):
+            i = n % self.entries
+            batch.append(data[2 * i] | data[2 * i + 1] << 8)
+        self.seen = before
+        return batch
+
+
+def cmd_ikbd_log(args: argparse.Namespace) -> int:
+    """Record the IKBD decoder's input (see the module docstring)."""
+    log = IkbdLog(matching_elf(args.elf))
+    samples: list[int | None] = []
+    end = time.monotonic() + args.seconds
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+    with open(args.out, "w") as f:
+        try:
+            log.poll()  # from now on
+            while time.monotonic() < end:
+                batch = log.poll()
+                samples += batch
+                f.writelines("gap\n" if s is None else f"{s:04x}\n" for s in batch)
+                f.flush()
+        except KeyboardInterrupt:
+            pass
+    print(ikbd_log_summary(samples, log.missed))
+    return 0
+
+
 def cmd_heap(args: argparse.Namespace) -> int:
     elf = matching_elf(args.elf)
     csv = None
@@ -1154,6 +1266,13 @@ def build_parser() -> argparse.ArgumentParser:
     cn.add_argument("--watch", type=float, metavar="SECONDS",
                     help="print what changed every SECONDS until Ctrl-C")
     cn.set_defaults(func=cmd_counters)
+
+    il = sub.add_parser("ikbd-log", help="record the IKBD decoder's input "
+                        "(debug builds)")
+    il.add_argument("out")
+    il.add_argument("--seconds", type=float, default=60.0)
+    il.add_argument("--elf")
+    il.set_defaults(func=cmd_ikbd_log)
 
     fbp = sub.add_parser("fb", help="grab the framebuffer as a PNG")
     fbp.add_argument("out")

@@ -166,11 +166,10 @@ void emul_start() {
   devhooks_setAppHandler(demo_dispatcher_devhook);
 
   // Main loop:
-  //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
-  //      ring (one PIO sample per IKBD byte the m68k Timer-B handler
-  //      forwarded; the filter inside ikbd_consume_rom3_sample picks
-  //      out the $FB8200..$FB82FF window).
-  //   2. Run the IKBD demux on whatever bytes arrived.
+  //   1. Drain the ROM3 commemul ring; ikbd_consume_rom3_sample keeps the
+  //      IKBD samples (every byte the m68k ACIA interrupt forwarded, the
+  //      ST's byte counts, overruns and input mode reports) in order.
+  //   2. Decode them: keys, mouse and joysticks (ikbd_pump).
   //   3. Forward decoded key events to the dispatcher (which routes
   //      to the menu or the active demo).
   //   4. Re-render the cart framebuffer via the dispatcher (menu UI
