@@ -25,7 +25,8 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
   cores), so it barely eats into your frame budget.
 - **Sampled sound**: 8-bit at 12.5 kHz through the DMA sound chip on an
   STE or a Mega STE, ~6 kHz 6-bit out the YM2149 elsewhere — the same
-  asset plays on both.
+  asset plays on both. Or trade frames for sound: the **25 fps profile**
+  plays 25 kHz and ~22 kHz (see "Two profiles" in §5).
 - **Atari ST keyboard, mouse and joysticks handled on the RP2040** —
   decoded scancodes, mouse movement and stick states delivered straight to
   your app.
@@ -337,7 +338,8 @@ They show what a game needs beyond the section above:
 
 On an STE or a Mega STE the sound goes through the DMA sound chip (8-bit,
 12,517 Hz, no interrupt per sample); on a plain ST or Mega ST it goes
-through the YM2149 (~6-bit, 5,585 Hz). The template picks the output at
+through the YM2149 (~6-bit, 5,585 Hz). Those are the 50 fps profile's
+rates; the 25 fps profile doubles and quadruples them (below). The template picks the output at
 every ST boot, and the RP writes the samples ahead of what the ST plays
 from a timer interrupt, so the sound never tears and never repeats,
 whatever your frame rate. Your audio is YM volume pairs or 8-bit PCM, and
@@ -374,9 +376,8 @@ audio_set_pcm_callback(my_pcm, AUDIO_DMA_RATE_HZ);
 
 ### Generate audio live (callback)
 
-For dynamic sound, install a fill callback. The library calls it for each
-VBL of samples it needs, with the exact byte count the m68k will consume
-(224 = 112 two-channel samples at ~5,585 Hz):
+For dynamic sound in YM pairs, install a fill callback. The library asks it
+for pairs at 5,585 Hz, whatever the output's rate (it resamples them):
 
 ```c
 static void my_fill(uint8_t *buf, uint32_t bytes) {
@@ -386,11 +387,38 @@ audio_set_fill_callback(my_fill);   // pass NULL for silence
 ```
 
 Either way, **`audio_render_frame()` must be called each loop iteration**:
-it tops up a small FIFO (4 VBLs of samples) that the interrupt plays from.
+it tops up a small FIFO (4 VBLs of samples, 3 on the YM at 25 fps) that the interrupt plays from.
 Your loop may take up to 80 ms between two calls without the sound
 noticing; a sample reaches the speaker at most 120 ms after your callback
 made it on the YM, about 175 ms on the DMA chip. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
 from SD — see §7.
+
+### Two profiles: 50 fps, or 25 fps with rich sound
+
+The ST's time goes to two things: copying your frame to its screen (17.6 ms
+for a full screen) and, on a plain ST or Mega ST, playing the sound
+sample by sample through Timer-B (about 19 µs a sample). You choose the
+trade at compile time with `APP_PROFILE` (`rp/src/include/profile.h`):
+
+| | `PROFILE_50FPS` (default) | `PROFILE_25FPS` |
+|---|---|---|
+| Frames | every VBL: 50 fps | every second VBL: 25 fps, on every machine |
+| YM (plain ST, Mega ST) | 5,585 Hz | 21,943 Hz |
+| DMA chip (STE, Mega STE) | 12,517 Hz | 25,033 Hz |
+| Good for | arcade games, full-screen effects | story games, laserdisc-style |
+
+```bash
+APP_PROFILE=PROFILE_25FPS ./build.sh pico_w release 44444444-4444-4444-8444-444444444444
+```
+
+The same ST code serves both: the RP tells the ST the profile at boot.
+`fb_publish()` then paces your loop at the profile's frame rate. Measured on
+a Mega ST at 25 fps, the full copy and 22 kHz sound leave about 5.5 ms of
+each 40 ms frame free, and a mouse moved flat out costs no frame. Your
+sources keep their rates: `AUDIO_DMA_RATE_HZ` follows the profile, and YM
+pairs and PCM at other rates are resampled. If your game steps its state
+once a frame, it moves half as fast at 25 fps: scale by
+`PROFILE_VBLS_A_FRAME`, or count time (`time_us_32()`).
 
 ---
 
@@ -451,10 +479,11 @@ moves fast (up to 9 bytes a VBL: the mouse modes set a threshold of 4 counts
 per packet) some blits end after the next VBL and that frame waits one: on a
 Mega ST, 50 frames a second at rest, 30-40 while the mouse moves flat out.
 The sound stays clean. On an STE or a Mega STE the DMA chip plays the sound
-and the blitter copies the frame, and the mouse costs no frames.
-`FB_SLACK_REPORT` in `userfw.s` measures the slack your app leaves
-(`tools/dev/README.md`); blitting fewer lines (`FB_COPY_LINES`, about 88 µs
-per line) buys more.
+and the blitter copies the frame, and the mouse costs no frames; nor does
+it in the 25 fps profile (§5). The ST's stopwatch (`TIME_STUDY` in
+`userfw.s`, `tools/dev/swd.py stopwatch`) measures the slack your app
+leaves (`tools/dev/README.md`); blitting fewer lines (`FB_COPY_LINES`,
+about 88 µs per line) buys more.
 
 ---
 

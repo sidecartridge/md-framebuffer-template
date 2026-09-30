@@ -31,7 +31,9 @@ blank; **~19 ms of compute every VBL** to draw your frame; chunked
 drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
 conversion done for you in **~1 ms per VBL** (split across both cores);
 sampled sound (8-bit 12.5 kHz through the DMA chip on an STE / Mega STE,
-~6 kHz 6-bit out the YM2149 elsewhere); and the Atari ST
+~6 kHz 6-bit out the YM2149 elsewhere; or, with `APP_PROFILE=PROFILE_25FPS`
+at build time, 25 fps with 25 kHz / ~22 kHz sound: `rp/src/include/profile.h`);
+and the Atari ST
 keyboard, mouse and joysticks handled on the RP2040, delivered to your app
 as key events, mouse movement and stick states.
 
