@@ -7,7 +7,7 @@
  * dispatcher in demo_menu.c owns the boot-menu UI, the demo-selection
  * state machine, and the ESC routing:
  *
- *   - In MENU state: numeric keys 1/2/3 start a demo; ESC exits to
+ *   - In MENU state: numeric keys 1..5 start a demo; ESC exits to
  *     GEM via the cart CMD_BOOT_GEM sentinel.
  *   - In ACTIVE state: ESC tears down the demo and returns to the
  *     menu; all other keys are forwarded to the demo via its
@@ -59,6 +59,7 @@ extern const demo_module_t demo_parallax;
 extern const demo_module_t demo_3d;
 extern const demo_module_t demo_sprites;
 extern const demo_module_t demo_cojorotozoom;
+extern const demo_module_t demo_input;
 
 /* Dispatcher entry points. Call init() once at boot; call
  * handle_key() for every popped IKBD event and render_frame() once
@@ -76,10 +77,12 @@ extern bool g_show_timing;
 /* Host commands for the dispatcher, debug builds only (devhooks.h;
  * `tools/dev/swd.py app NAME [WORD]`). demo_dispatcher_devhook() is their
  * handler, registered by emul.c. */
-#define DEVHOOKS_APP_DEMO 1       /* WORD 1..4: launch that demo */
+#define DEVHOOKS_APP_DEMO 1       /* WORD 1..5: launch that menu item */
 #define DEVHOOKS_APP_MENU 2       /* back to the menu */
 #define DEVHOOKS_APP_OVERLAY 3    /* WORD 0 or 1: the DRAW/C2P readout */
 #define DEVHOOKS_APP_SLOW_FRAME 4 /* WORD: stall every frame this many ms */
+#define DEVHOOKS_APP_INPUT_MODE 5 /* WORD 0..3: ikbd_set_input_mode() */
+#define DEVHOOKS_APP_IKBD_CMD 6   /* WORD...: IKBD command bytes to send */
 uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
                                  uint16_t payloadSize);
 

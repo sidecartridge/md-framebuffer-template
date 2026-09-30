@@ -105,21 +105,23 @@ static demo_state_t s_state;
 static const demo_module_t *s_active;
 static int s_menu_sel; /* highlighted menu item (0..MENU_ITEM_COUNT-1) */
 
-#define MENU_ITEM_COUNT 4
+#define MENU_ITEM_COUNT 5
 static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
     &demo_parallax,
     &demo_3d,
     &demo_sprites,
     &demo_cojorotozoom,
+    &demo_input,
 };
 
 /* IKBD scancodes for the menu hotkeys. ESC = $01 is the back/exit
- * key; 1/2/3/4 = $02/$03/$04/$05 on the unshifted top row. */
+ * key; 1..5 = $02..$06 on the unshifted top row. */
 #define IKBD_SC_ESC 0x01u
 #define IKBD_SC_1   0x02u
 #define IKBD_SC_2   0x03u
 #define IKBD_SC_3   0x04u
 #define IKBD_SC_4   0x05u
+#define IKBD_SC_5   0x06u
 #define IKBD_SC_D   0x20u  /* hidden: toggle DRAW/C2P readout (menu + demos) */
 #define IKBD_SC_B   0x30u  /* B = return to Booster (menu only) */
 #define IKBD_SC_RET 0x1Cu  /* Return = launch the highlighted item */
@@ -254,7 +256,7 @@ static void __not_in_flash_func(render_menu)(void) {
   }
 
   /* Dark panel behind the menu list for legibility, then the text. */
-  fb_fill_rect(48, 64, 224, 96, 15);
+  fb_fill_rect(48, 64, 224, 104, 15);
 
   font_set_font(&font8x8);
   font_set_color(0);
@@ -265,10 +267,10 @@ static void __not_in_flash_func(render_menu)(void) {
 
   static const char *const items[MENU_ITEM_COUNT] = {
       "1.  Uridium scroll", "2.  3D Solid", "3.  Multi-sprite swarm",
-      "4.  Cojorotozoom"};
+      "4.  Cojorotozoom", "5.  Input test"};
   font_align(FONT_ALIGN_LEFT);
   for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    int iy = 76 + i * 16;
+    int iy = 72 + i * 14;
     if (i == s_menu_sel) {
       fb_fill_rect(56, iy - 2, 208, 12, 14); /* amber highlight bar */
       font_set_color(15);                    /* dark text on the bar */
@@ -279,10 +281,10 @@ static void __not_in_flash_func(render_menu)(void) {
     font_print(items[i]);
   }
   font_set_color(0);
-  font_move(60, 140);
+  font_move(60, 144);
   font_print("UP/DN  RET=start  ESC=exit");
   font_align(FONT_ALIGN_CENTER);
-  font_move(FB_CHUNKED_W / 2, 150);
+  font_move(FB_CHUNKED_W / 2, 155);
   font_print("B=return to Booster");
 
   /* Hidden DRAW/C2P readout (toggled with 'D'), previous frame's numbers
@@ -406,6 +408,7 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
       case IKBD_SC_2:
       case IKBD_SC_3:
       case IKBD_SC_4:
+      case IKBD_SC_5:
         launch_demo((unsigned)(k->scancode - IKBD_SC_1));
         break;
       default:
@@ -457,6 +460,19 @@ uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
       s_slow_frame_us = (uint32_t)arg * 1000u;
       DPRINTF("dispatcher: every frame stalls %u ms\n", (unsigned)arg);
       return 1;
+    case DEVHOOKS_APP_INPUT_MODE:
+      if (arg >= IKBD_INPUT_MODES) return 0;
+      DPRINTF("dispatcher: host -> input mode %u\n", (unsigned)arg);
+      ikbd_set_input_mode((ikbd_input_mode_t)arg);
+      return 1;
+    case DEVHOOKS_APP_IKBD_CMD: {
+      uint8_t cmd[CART_IKBD_OUT_MAX];
+      size_t n = payloadSize / 2u;
+      if (n > sizeof(cmd)) return 0;
+      for (size_t i = 0; i < n; i++) cmd[i] = (uint8_t)payload[i];
+      DPRINTF("dispatcher: host -> %u IKBD command byte(s)\n", (unsigned)n);
+      return ikbd_send_commands(cmd, n) ? 1u : 0u;
+    }
     default:
       return 0;
   }
