@@ -203,10 +203,19 @@ its colour-cycling.
 ```c
 void fb_publish(void);            // call once per frame, after drawing
 uint32_t fb_last_convert_us(void);// c2p cost of the last publish (debug)
+void fb_set_copy_mode(uint8_t mode, uint8_t piece); // who copies on the ST
 ```
 
 `fb_publish()` blocks until the ST has finished blitting the previous
 frame, so calling it once per loop naturally paces your app to 50 Hz.
+
+On the ST the 68000 copies each frame to the screen, or, on an STE or a
+Mega STE, the blitter, which gives the ST about 1.4 ms of every frame
+back. Where the YM plays the sound (a plain ST, a Mega ST fitted with a
+blitter) the 68000 copies: the blitter holds the CPU off, Timer-B's samples
+come late and the sound gets rough. `fb_set_copy_mode(CART_BLIT_MODE_BLITTER, 0)`
+takes the blitter anyway, for an app without sound (about 3 ms more on a
+Mega ST); `CART_BLIT_MODE_CPU` keeps the 68000.
 
 ---
 
@@ -418,9 +427,11 @@ and the audio leave the ST about 0.27 ms of each VBL, so while the mouse
 moves fast (up to 9 bytes a VBL: the mouse modes set a threshold of 4 counts
 per packet) some blits end after the next VBL and that frame waits one: on a
 Mega ST, 50 frames a second at rest, 30-40 while the mouse moves flat out.
-The sound stays clean. `FB_SLACK_REPORT` in `userfw.s` measures the slack
-your app leaves (`tools/dev/README.md`); blitting fewer lines
-(`FB_COPY_LINES`, about 88 µs per line) buys more.
+The sound stays clean. On an STE or a Mega STE the DMA chip plays the sound
+and the blitter copies the frame, and the mouse costs no frames.
+`FB_SLACK_REPORT` in `userfw.s` measures the slack your app leaves
+(`tools/dev/README.md`); blitting fewer lines (`FB_COPY_LINES`, about 88 µs
+per line) buys more.
 
 ---
 

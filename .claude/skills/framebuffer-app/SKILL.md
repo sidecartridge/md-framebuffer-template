@@ -170,7 +170,10 @@ while (true) {
   keyboard replug. Stick 1's fire is the right mouse button's wire. Every
   IKBD byte costs the ST an interrupt (30–40 µs) out of ~0.27 ms of slack
   after the full-screen blit: a mouse moved fast drops some frames to
-  30–40 fps (accepted; blit fewer lines if an app must hold 50).
+  30–40 fps (accepted; blit fewer lines if an app must hold 50). On an
+  STE / Mega STE the DMA chip plays the sound and the blitter copies the
+  frame: no frames lost. `fb_set_copy_mode()` forces the CPU or the
+  blitter (the blitter on the YM path roughens the sound).
 - **Palette:** index 0 = white (text/border), 15 = black (background);
   `PALETTE_RGB(r,g,b)` channels are 0..7. Re-publishing the palette each
   frame is cheap (colour-cycling).

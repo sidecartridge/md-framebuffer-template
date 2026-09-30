@@ -17,7 +17,8 @@ Python tools use the standard library only.
   `fb_frame_tick`, `s_vbl_seen` and `fbAckTimeouts` (fb.c), `ikbdOverruns`, `ikbdBytes`,
   `ikbdMousePackets`, `ikbdJoystickPackets`, `ikbdResyncs`, `ikbdCountMismatches` and
   `ikbdPowerUps` (ikbd.c), `commOverruns` (commemul.c), and `audioSlicesWritten`,
-  `audioLateSlices`, `audioUnderruns` and `audioOutput` (audio.c). Debug builds also keep `ikbdLog` /
+  `audioLateSlices`, `audioUnderruns` and `audioOutput` (audio.c), and `stSessionFeatures`
+  (st_session.c: 1 when the ST has a blitter). Debug builds also keep `ikbdLog` /
   `ikbdLogCount` (ikbd.c, for `ikbd-log`) and, when `userfw.s` reports it, the blit slack
   (`fbSlackHist`, `fbSlackMinUs`, `fbSlackLate` in fb.c).
 - Debug builds carry the devhooks mailbox (`rp/src/include/devhooks.h`, included once from
@@ -173,6 +174,9 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
   both outputs on one STE with a reset in between.
 - `tone HZ`: a sine through the PCM path, whose clicks are easy to hear; `tone 0` goes back to
   `DEMO.YMS`.
+- `copy_mode MODE [PIECE]`: who copies the frame on the ST, from its next VBL (0 auto: the
+  blitter on the DMA sound path; 1 the CPU; 2 the blitter), and the blitter's chunks per piece
+  (0: 40). With `FB_SLACK_REPORT` on, the slack histogram shows what each one leaves.
 
 An app adds its own the same way: a `DEVHOOKS_APP_<NAME>` define and a handler set with
 `devhooks_setAppHandler()`.
