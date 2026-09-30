@@ -76,12 +76,15 @@ released to run the app normally.
 
 ## 2. Starting fresh — strip the demos
 
-The template includes a boot menu and four demos as worked examples.
-For your own app, remove them and wire your code into the main loop.
+The template includes a boot menu with four demos, an input test and two
+small games as worked examples. For your own app, remove the menu and wire
+your code into the main loop.
 
 **The quick way:** `examples/hello_text/apply.sh` does all of this for you
 — it backs up `rp/` to `rp.bak`, deletes the demo/menu files below, and
-drops in a minimal `emul.c` + `CMakeLists.txt`. Run it, then build:
+drops in a minimal `emul.c` + `CMakeLists.txt`. (For a game,
+`examples/mini_game/apply.sh` does the same and boots into one of the
+games: see "Starting a game" below.) Run it, then build:
 
 ```bash
 examples/hello_text/apply.sh
@@ -101,17 +104,18 @@ rp/src/demo_3d.c              rp/src/include/sidecart_text.h
 rp/src/demo_sprites.c         rp/src/include/solid3d.h
 rp/src/demo_cojorotozoom.c    rp/src/include/sprites_data.h
 rp/src/demo_input.c           rp/src/include/cojo_texture.h
-                              rp/src/include/cojo_font.h
+rp/src/demo_games.c           rp/src/include/cojo_font.h
                               rp/src/include/diego_sprite.h
                               rp/src/include/uridium_surface.h
 ```
 
-Keep `tools/png_to_texture.py` and `tools/wav_to_ym4.py` — they convert
-your *own* image/audio assets into headers.
+Keep `tools/png_to_bitmap.py`, `tools/png_to_texture.py` and
+`tools/wav_to_ym4.py` — they convert your *own* images and sounds into
+headers. The games (`rp/src/game_*.c`) can stay or go.
 
 ### Files to **change**
 
-- **`rp/src/CMakeLists.txt`** — remove the six `demo_*.c` entries from
+- **`rp/src/CMakeLists.txt`** — remove the seven `demo_*.c` entries from
   `target_sources(...)`. (You can also drop `hardware_interp` from
   `target_link_libraries` unless you use the SIO interpolator.)
 - **`rp/src/emul.c`** — the main loop currently drives the demo
@@ -307,6 +311,25 @@ your own graphics.
 
 > Tip: keep `fb_pump_rom3()` + `ikbd_pump()` at the top of the loop and
 > `audio_render_frame()` at the bottom — those keep input and audio alive.
+
+### Starting a game
+
+**`examples/mini_game/`** boots straight into one of the two games that
+come with the template, which are also entries 6 and 7 of the demo menu:
+`rp/src/game_arena.c` (the joystick: grab gems, shoot enemies) and
+`rp/src/game_zap.c` (the mouse: the left button zaps, the right one takes).
+They show what a game needs beyond the section above:
+
+- an input mode, keys held down (the IKBD sends no repeats), and the
+  joystick's and the mouse's press latches;
+- sprites drawn again only where they moved, over a tiled arena
+  (`game_kit.c`);
+- sprites and tiles drawn as indexed PNGs and converted by
+  `tools/png_to_bitmap.py` into `FB_BITMAP`s and a palette;
+- a tune and sound effects computed as they play, through
+  `audio_set_pcm_callback()`.
+
+`examples/mini_game/README.md` walks through them.
 
 ---
 

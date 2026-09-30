@@ -27,6 +27,19 @@
 - The audio buffer in the cartridge window grows to 2 KB: `APP_FREE` starts at `$FA4980`
   (about 14.4 KB).
 
+### Games
+
+- Two small games, on the public APIs only, as the reference for starting a game: Arena (the
+  joystick: grab gems, shoot enemies, three lives) and Zap (the mouse: the left button zaps
+  enemies, the right one takes gems; the HUD lights L and R while they are held). They are
+  entries 6 and 7 of the demo menu, and `examples/mini_game` builds a firmware that boots
+  straight into one. They draw again only what moved, and compute their tune and sound
+  effects as they play.
+- `tools/png_to_bitmap.py` turns an indexed PNG (16 colours, one of them transparent) into
+  `FB_BITMAP`s for `fb_blit()` / `fb_blit_key()`, a whole image or cut into tiles, with its
+  palette for `palette_set()`. Plain Python, no Pillow.
+- The demo menu is centred on the screen.
+
 ### Blitter
 
 - On an STE or a Mega STE the blitter copies each frame to the screen instead of the 68000,
