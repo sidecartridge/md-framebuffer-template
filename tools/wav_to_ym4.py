@@ -213,6 +213,17 @@ def _float_to_ym_raw_byte(
     return out
 
 
+def _float_to_pcm8(samples: list[float], pcm_gain: float = 1.0) -> list[int]:
+    """Signed 8-bit PCM, one byte per sample (-128..127): what the STE's
+    DMA sound chip plays, and what audio_play_pcm_loop() takes on the RP,
+    which also converts it for the YM."""
+    out: list[int] = []
+    for s in samples:
+        v = int(round(max(-1.0, min(1.0, s * pcm_gain)) * 127.0))
+        out.append(max(-128, min(127, v)))
+    return out
+
+
 def _pack_ym_bytes(va: int, vb: int) -> list[int]:
     """Pack one sample as 4 bytes for the m68k MOVEP.L emit. The cart
     bus byte-swaps within each 16-bit word, so to make m68k's
@@ -388,6 +399,7 @@ def _write_c_header(
     symbol: str,
     count_symbol: str,
     target_rate: int,
+    pcm: bool = False,
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     guard = _header_guard_from_path(out_path)
@@ -397,17 +409,25 @@ def _write_c_header(
         out.write(f"#define {guard}\n\n")
         out.write("#include <stdint.h>\n\n")
         out.write(f"#define AUDIO_SAMPLE_RATE_HZ {target_rate}u\n\n")
-        out.write(
-            "/* Two bytes per sample: byte 2n = channel A volume, byte 2n+1\n"
-            " * = channel B volume. The (A, B) pairs are precomputed so the\n"
-            " * summed YM acoustic amplitudes best fit the linear-biased\n"
-            " * PCM value (Ghostbusters-style 2-channel pseudo-DAC). */\n"
-        )
-        out.write(f"static const uint8_t {symbol}[] = {{\n")
+        if pcm:
+            out.write(
+                "/* Signed 8-bit PCM, one byte per sample: play it with\n"
+                " * audio_play_pcm_loop(data, count, AUDIO_SAMPLE_RATE_HZ). */\n"
+            )
+            out.write(f"static const int8_t {symbol}[] = {{\n")
+        else:
+            out.write(
+                "/* Two bytes per sample: byte 2n = channel A volume, byte 2n+1\n"
+                " * = channel B volume. The (A, B) pairs are precomputed so the\n"
+                " * summed YM acoustic amplitudes best fit the linear-biased\n"
+                " * PCM value (Ghostbusters-style 2-channel pseudo-DAC). */\n"
+            )
+            out.write(f"static const uint8_t {symbol}[] = {{\n")
         per_line = 16
         for start in range(0, len(samples), per_line):
             row = samples[start : start + per_line]
-            out.write("    " + ", ".join(f"0x{v:X}" for v in row) + ",\n")
+            fmt = (lambda v: str(v)) if pcm else (lambda v: f"0x{v:X}")
+            out.write("    " + ", ".join(fmt(v) for v in row) + ",\n")
         out.write("};\n\n")
         out.write(
             f"static const uint32_t {count_symbol} = "
@@ -429,7 +449,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--target-rate", type=int, default=15350)
     p.add_argument("--mode",
                    choices=["nibble", "best-pair", "ghostbusters",
-                            "dual-ghost", "single-a", "raw-byte"],
+                            "dual-ghost", "single-a", "raw-byte", "pcm"],
                    default="ghostbusters",
                    help="PCM-to-YM mapping. 'nibble': split 8-bit sample "
                         "into high/low nibbles -> (chA, chB). 'best-pair': "
@@ -442,7 +462,10 @@ def parse_args() -> argparse.Namespace:
                         "(ch B always 0; pair with mixer R7=$FE). "
                         "'raw-byte': 1 byte/sample = unsigned 8-bit PCM "
                         "verbatim (no LUT, no nibble split) -- m68k "
-                        "extracts nibbles at runtime.")
+                        "extracts nibbles at runtime. 'pcm': signed 8-bit "
+                        "PCM for audio_play_pcm_loop() (the STE's DMA chip "
+                        "at 12517 Hz; the RP converts it for the YM); C "
+                        "header only.")
     p.add_argument("--lut-scale", type=float, default=1.0,
                    help="Range compression for the (A,B) pair search: "
                         "1.0 = full YM sum range [0, 2.0] (default); "
@@ -479,6 +502,10 @@ def main() -> int:
         print("error: at least one of --header-output / --yms-output is required",
               file=sys.stderr)
         return 1
+    if args.mode == "pcm" and args.yms_output:
+        print("error: .YMS files hold YM pairs: --mode pcm writes a C header only",
+              file=sys.stderr)
+        return 1
 
     suffix = args.input_path.suffix.lower()
     if suffix == ".sam":
@@ -496,12 +523,15 @@ def main() -> int:
         ym4 = _float_to_ym_single_a(resampled, args.pcm_gain)
     elif args.mode == "raw-byte":
         ym4 = _float_to_ym_raw_byte(resampled, args.pcm_gain)
+    elif args.mode == "pcm":
+        ym4 = _float_to_pcm8(resampled, args.pcm_gain)
     else:
         ym4 = _float_to_ym_pair(resampled, args.lut_scale, args.pcm_gain)
 
     if args.header_output:
         _write_c_header(
-            ym4, args.header_output, args.symbol, args.count_symbol, args.target_rate
+            ym4, args.header_output, args.symbol, args.count_symbol, args.target_rate,
+            pcm=args.mode == "pcm",
         )
     if args.yms_output:
         _write_yms_file(ym4, args.yms_output, args.target_rate, args.mode)
@@ -510,7 +540,7 @@ def main() -> int:
     #   single-a, raw-byte -> 1 byte
     #   dual-ghost         -> 2 bytes (vA, vB)
     #   other              -> 4 bytes (MOVEP.L layout)
-    if args.mode in ("single-a", "raw-byte"):
+    if args.mode in ("single-a", "raw-byte", "pcm"):
         bytes_per_sample = 1
     elif args.mode == "dual-ghost":
         bytes_per_sample = 2
