@@ -1,29 +1,36 @@
 /**
  * File: audio.c
- * Description: Cart-shared audio buffer producer.
+ * Description: The app's sound, to the YM or to the DMA sound chip.
  *
- * The m68k Timer-B IRQ plays (vA, vB) pairs from the cart buffer at
- * CART_AUDIO_BUFFER_OFFSET, one slice of CART_AUDIO_SLICES per VBL: the
- * ST's VBL handler moves Timer-B to the next slice and reports which one
- * through the ROM3 window CART_ROM3_AUDIO_SLICE_WINDOW. The RP writes only
- * the slices ahead of the one playing, so the ST never plays a slice while
- * it is being written.
+ * Two outputs, one per machine (the ST's hello says which):
+ *   - the YM: the m68k Timer-B IRQ plays (vA, vB) pairs from the cart buffer
+ *     at CART_AUDIO_BUFFER_OFFSET, one slice of CART_AUDIO_SLICES per VBL:
+ *     the ST's VBL handler moves Timer-B to the next slice and reports which
+ *     one through CART_ROM3_AUDIO_SLICE_WINDOW. The RP writes only the slices
+ *     ahead of the one playing, so the ST never plays a slice while it is
+ *     being written;
+ *   - the DMA sound chip of an STE or a Mega STE: it plays 8-bit samples at
+ *     12,517 Hz from a ring in ST RAM, which the ST fills every VBL from the
+ *     cart buffer, its mirror, up to CART_AUDIO_DMA_LEAD bytes ahead of where
+ *     it reports the chip plays (CART_ROM3_DMA_POS_WINDOW). The RP writes the
+ *     mirror further ahead still, never where the ST copies.
+ * The ST picks the output at boot by the same rule the RP applies at the
+ * hello (select_output): the DMA chip when the machine has one, unless the
+ * app asked for the YM (audio_prefer_ym; CART_AUDIO_OUT_OFFSET).
  *
  * Two stages, so that the sound does not depend on the app's frame loop:
- *   - audio_render_frame(), from the main loop, tops up a small RAM FIFO
- *     with the app's fill callback (a loop in flash, a .YMS file on the SD
- *     card, the app's own generator);
- *   - a repeating timer interrupt (audio_writer) follows the ST's reports
- *     and moves one VBL of samples from the FIFO into each slice ahead.
- * The main loop may go AUDIO_FIFO_SLICES VBLs between two top-ups without
- * the sound noticing (80 ms by default): each VBL takes one slice from the
- * FIFO, the slices written ahead included. A sample reaches the ST at most
- * AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD VBLs after the callback produced
- * it. When the FIFO is empty the slice holds the last sample (an underrun,
- * counted), never stale data.
+ *   - audio_render_frame(), from the main loop, tops up a small RAM FIFO in
+ *     the output's format with the app's source: YM pairs (a loop in flash, a
+ *     .YMS file on the SD card, the app's callback) or 8-bit PCM (a loop, a
+ *     callback), converted when the output wants the other (the 64-entry
+ *     two-channel table both ways, linear resampling between the rates);
+ *   - a repeating timer interrupt (audio_writer) follows the ST's reports and
+ *     moves samples from the FIFO into the cart buffer ahead of the ST.
+ * The main loop may go about AUDIO_FIFO_SLICES VBLs between two top-ups
+ * without the sound noticing (80 ms by default). When the FIFO is empty the
+ * output holds the last sample (an underrun, counted), never stale data.
  *
- * See audio.h for the public API and `audio_play_loop` /
- * `audio_set_fill_callback` semantics.
+ * See audio.h for the public API.
  */
 
 #include "audio.h"
@@ -40,6 +47,7 @@
 #include "hardware/sync.h"
 #include "pico/stdlib.h"
 #include "pico/time.h"
+#include "st_session.h"
 
 /* A PAL VBL, nominally. The slices follow the ST's own VBLs; this is the
  * period the sample arithmetic below is for. */
@@ -51,47 +59,100 @@
  *   = 223.43 B/VBL @ 2 B/sample (dual-channel mode).
  * Rounded up to 224, of a slice's CART_AUDIO_SLICE_BYTES. */
 #define AUDIO_FILL_BYTES_PER_VBL 224u
+#define AUDIO_FILL_SAMPLES_PER_VBL (AUDIO_FILL_BYTES_PER_VBL / 2u)
 
 /* Slices written ahead of the one the ST plays. */
 #define AUDIO_SLICES_AHEAD 2u
 
-/* The FIFO between the app's fill callback and the slice writer, in VBLs of
- * samples: the longest the main loop may go between two top-ups. More
- * delays the sound as much: up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD
- * VBLs from the callback to the ST. */
+/* The FIFO between the app's source and the writer, in VBLs of samples:
+ * the longest the main loop may go between two top-ups. More delays the
+ * sound as much: on the YM up to AUDIO_FIFO_SLICES + AUDIO_SLICES_AHEAD
+ * VBLs from the source to the ST. */
 #ifndef AUDIO_FIFO_SLICES
 #define AUDIO_FIFO_SLICES 4u
 #endif
 
-/* The slice writer runs this often; the ST's report is seen at most this
- * long after its VBL, a slice ahead of when it is needed. */
+/* The writer runs this often; the ST's report is seen at most this long
+ * after its VBL, well before the samples are needed. */
 #define AUDIO_WRITER_PERIOD_US 4000
 /* How far back in the ROM3 ring the writer looks for the latest report: a
- * frame adds a few samples (the report, the blit acknowledgement, keys). */
+ * frame adds a few samples (the reports, the blit acknowledgement, keys). */
 #define AUDIO_REPORT_LOOKBACK 64u
 /* No new report for this long: the ST left userfw (GEM, a reset). The next
  * report starts the count again. */
 #define AUDIO_REPORT_TIMEOUT_US 200000u
 
-static uint8_t *s_audio_buf;
-static audio_fill_cb_t s_fill_cb;
+/* Must match TIMERB_COUNT in target/atarist/src/userfw.s:
+ *   2.4576 MHz / 4 / 110 = 5,585.45 Hz */
+#define AUDIO_NATIVE_RATE_HZ      5585u
 
+/* The DMA output: its FIFO holds a VBL more than AUDIO_FIFO_SLICES VBLs
+ * of samples at 12,517 Hz (250.3 a VBL): it is topped up by the chunk, and
+ * the main loop may still go AUDIO_FIFO_SLICES VBLs between two top-ups.
+ * The writer keeps the mirror written this far
+ * ahead of where the chip plays now: its last report, plus the samples
+ * played since (a missed VBL sends no report, and the chip goes on). At its
+ * next VBL the ST copies up to CART_AUDIO_DMA_LEAD ahead; the rest covers
+ * the writer's period and how late it sees a report (4 ms, 50 samples,
+ * each). */
+#define AUDIO_DMA_FIFO_BYTES ((AUDIO_FIFO_SLICES + 1u) * 256u)
+#define AUDIO_DMA_AHEAD (CART_AUDIO_DMA_LEAD + 160u)
+/* The estimate goes at most this far past the last report. */
+#define AUDIO_DMA_EST_MAX_US (3u * AUDIO_FRAME_PERIOD_US)
+#define AUDIO_DMA_RING_MASK (CART_AUDIO_DMA_RING_BYTES - 1u)
+
+_Static_assert(AUDIO_DMA_RATE_HZ == CART_AUDIO_DMA_RATE_HZ,
+               "audio.h and cart_shared.h disagree on the DMA rate");
+
+/* A PCM callback is asked for this many samples at a time. */
+#define AUDIO_PCM_CHUNK 64u
+
+typedef enum {
+  AUDIO_OUT_NONE = 0, /* between two outputs: the writer waits */
+  AUDIO_OUT_YM,
+  AUDIO_OUT_DMA,
+} audio_out_t;
+
+static uint8_t *s_audio_buf;
+static volatile audio_out_t s_out;
+static bool s_prefer_ym;
+static uint32_t s_hellos_seen;
+
+/* The app's source: YM pairs at AUDIO_NATIVE_RATE_HZ, or PCM at a rate. */
+static audio_fill_cb_t s_fill_cb;
+static audio_pcm_cb_t s_pcm_cb;
+static uint32_t s_pcm_rate;
+
+/* The YM output's FIFO: whole VBLs of pairs. */
 static uint8_t s_fifo[AUDIO_FIFO_SLICES][AUDIO_FILL_BYTES_PER_VBL];
 static volatile uint32_t s_fifo_head; /* slices produced (main loop) */
 static volatile uint32_t s_fifo_tail; /* slices consumed (writer) */
 
+/* The DMA output's FIFO: samples. */
+static int8_t s_dma_fifo[AUDIO_DMA_FIFO_BYTES];
+static volatile uint32_t s_dma_head; /* samples produced (main loop) */
+static volatile uint32_t s_dma_tail; /* samples consumed (writer) */
+
+/* The YM writer's view of the ST. */
 static bool s_st_known;      /* the ST's slice is known */
 static uint32_t s_st_vbl;    /* VBLs counted from the reports; its low bits are the slice */
 static uint32_t s_next_vbl;  /* the next VBL whose slice is not written yet */
 static uint16_t s_last_report;
 static uint32_t s_last_report_us;
 static uint8_t s_hold[2];    /* the last sample written: what an underrun holds */
+
+/* The DMA writer's view of the ST. */
+static bool s_dma_known;
+static uint32_t s_dma_front; /* the next offset of the ring the RP writes */
+static int8_t s_dma_hold;
+
 static repeating_timer_t s_writer_timer;
 
 /* Readable over SWD by their symbols (tools/dev/swd.py counters). */
-uint32_t audioSlicesWritten;
-uint32_t audioUnderruns;  /* slices written as a held sample: the FIFO was empty */
-uint32_t audioLateSlices; /* slices the ST started before the RP had written them */
+uint32_t audioSlicesWritten; /* VBLs of samples the writer followed */
+uint32_t audioUnderruns;     /* writes of a held sample: the FIFO was empty */
+uint32_t audioLateSlices;    /* the ST played or copied what the RP had not written */
+uint32_t audioOutput;        /* 1: the YM, 2: the DMA sound chip */
 
 static bool audio_writer(repeating_timer_t *timer);
 
@@ -101,15 +162,17 @@ static const uint8_t *s_loop_data;
 static uint32_t s_loop_bytes;
 static uint32_t s_loop_pos;
 
+/* audio_play_pcm_loop()'s span. */
+static const int8_t *s_pcm_loop_data;
+static uint32_t s_pcm_loop_samples;
+static uint32_t s_pcm_loop_pos;
+
 /* .YMS-file streaming state. audio_play_yms_file() validates the
  * 16-byte header, stores the data offset, and installs audio_yms_cb
  * as the per-VBL fill callback. The file is kept open for the
  * lifetime of playback. */
 #define AUDIO_YMS_HEADER_SIZE     16u
 #define AUDIO_YMS_MODE_DUAL_GHOST 1u
-/* Must match TIMERB_COUNT in target/atarist/src/userfw.s:
- *   2.4576 MHz / 4 / 110 = 5,585.45 Hz */
-#define AUDIO_NATIVE_RATE_HZ      5585u
 
 static FIL s_yms_file;
 static bool s_yms_open;
@@ -117,29 +180,228 @@ static bool s_yms_open;
 static bool s_yms_failing;
 static FSIZE_t s_yms_data_offset;
 
+/* --- PCM <-> YM pairs ---------------------------------------------------- */
+
+/* The (vA, vB) pairs of the 1988 Ghostbusters demo's SAMPLE1 table, indexed
+ * by the upper 6 bits of an unsigned 8-bit sample: tools/wav_to_ym4.py's
+ * GHOSTBUSTERS_LUT (tests/host/test_audio_convert.c compares the two). */
+static const uint8_t k_ghost_pairs[64][2] = {
+    {0, 0},  {0, 2},  {1, 2},  {2, 2},  {2, 3},  {1, 4},  {2, 4},  {2, 5},
+    {0, 6},  {2, 6},  {3, 6},  {4, 6},  {2, 7},  {4, 7},  {5, 7},  {2, 8},
+    {3, 8},  {4, 8},  {5, 8},  {2, 9},  {3, 9},  {4, 9},  {5, 9},  {6, 9},
+    {7, 9},  {3, 10}, {4, 10}, {5, 10}, {6, 10}, {7, 10}, {0, 11}, {1, 11},
+    {2, 11}, {4, 11}, {5, 11}, {6, 11}, {7, 11}, {8, 11}, {8, 11}, {9, 11},
+    {9, 11}, {0, 12}, {1, 12}, {2, 12}, {3, 12}, {4, 12}, {5, 12}, {6, 12},
+    {8, 12}, {8, 12}, {9, 12}, {9, 12}, {9, 12}, {10, 12}, {0, 13}, {2, 13},
+    {3, 13}, {4, 13}, {5, 13}, {6, 13}, {7, 13}, {8, 13}, {8, 13}, {9, 13},
+};
+
+/* A YM channel's amplitude at each volume, x 10,000: 2^((v - 15) / 2), the
+ * curve tools/wav_to_ym4.py fits pairs to. */
+static const uint16_t k_ym_amp[16] = {0,    78,   110,  156,  221,  313,
+                                      442,  625,  884,  1250, 1768, 2500,
+                                      3536, 5000, 7071, 10000};
+
+/* A pair (vA << 4 | vB) as a signed 8-bit sample: the middle of the table
+ * entries it is, else the entry nearest in summed amplitude. */
+static int8_t s_pair_pcm[256];
+
+static int8_t pcm_of_index(uint32_t index) {
+  return (int8_t)((int32_t)(index * 4u + 2u) - 128);
+}
+
+static void build_pair_pcm(void) {
+  for (uint32_t pair = 0; pair < 256u; pair++) {
+    uint32_t a = pair >> 4, b = pair & 15u;
+    uint32_t sum = 0, count = 0;
+    for (uint32_t i = 0; i < 64u; i++) {
+      if (k_ghost_pairs[i][0] == a && k_ghost_pairs[i][1] == b) {
+        sum += i;
+        count++;
+      }
+    }
+    if (count != 0u) {
+      s_pair_pcm[pair] = pcm_of_index((sum + count / 2u) / count);
+      continue;
+    }
+    uint32_t amp = k_ym_amp[a] + k_ym_amp[b];
+    uint32_t best = 0, best_diff = UINT32_MAX;
+    for (uint32_t i = 0; i < 64u; i++) {
+      uint32_t e = k_ym_amp[k_ghost_pairs[i][0]] + k_ym_amp[k_ghost_pairs[i][1]];
+      uint32_t diff = e > amp ? e - amp : amp - e;
+      if (diff < best_diff) {
+        best_diff = diff;
+        best = i;
+      }
+    }
+    s_pair_pcm[pair] = pcm_of_index(best);
+  }
+}
+
+/* --- The source, as a stream of samples ---------------------------------- */
+
+static uint8_t s_ym_stage[AUDIO_FILL_BYTES_PER_VBL];
+static uint32_t s_ym_stage_pos = AUDIO_FILL_BYTES_PER_VBL;
+static int8_t s_pcm_stage[AUDIO_PCM_CHUNK];
+static uint32_t s_pcm_stage_pos = AUDIO_PCM_CHUNK;
+
+/* Linear resampling from the source's rate: s0 and s1 are the source
+ * samples around the output sample, pos the fraction between them (16.16). */
+static bool s_rs_primed;
+static int32_t s_rs_s0;
+static int32_t s_rs_s1;
+static uint32_t s_rs_pos;
+
+static void source_restart(void) {
+  s_ym_stage_pos = AUDIO_FILL_BYTES_PER_VBL;
+  s_pcm_stage_pos = AUDIO_PCM_CHUNK;
+  s_rs_primed = false;
+}
+
+static uint32_t source_rate(void) {
+  return s_pcm_cb != NULL ? s_pcm_rate : AUDIO_NATIVE_RATE_HZ;
+}
+
+/* The next source sample, as signed 8-bit PCM. */
+static int32_t source_sample(void) {
+  if (s_fill_cb != NULL) {
+    if (s_ym_stage_pos >= AUDIO_FILL_BYTES_PER_VBL) {
+      s_fill_cb(s_ym_stage, AUDIO_FILL_BYTES_PER_VBL);
+      s_ym_stage_pos = 0;
+    }
+    uint32_t pair = ((s_ym_stage[s_ym_stage_pos] & 15u) << 4) |
+                    (s_ym_stage[s_ym_stage_pos + 1u] & 15u);
+    s_ym_stage_pos += 2u;
+    return s_pair_pcm[pair];
+  }
+  if (s_pcm_cb != NULL) {
+    if (s_pcm_stage_pos >= AUDIO_PCM_CHUNK) {
+      s_pcm_cb(s_pcm_stage, AUDIO_PCM_CHUNK);
+      s_pcm_stage_pos = 0;
+    }
+    return s_pcm_stage[s_pcm_stage_pos++];
+  }
+  return 0;
+}
+
+/* The next output sample at `step` source samples per output sample
+ * (16.16): 1.0 passes the source through unchanged. */
+static int32_t resample(uint32_t step) {
+  if (!s_rs_primed) {
+    s_rs_s0 = source_sample();
+    s_rs_s1 = source_sample();
+    s_rs_pos = 0;
+    s_rs_primed = true;
+  }
+  int32_t v = s_rs_s0 + (((s_rs_s1 - s_rs_s0) * (int32_t)(s_rs_pos >> 4)) >> 12);
+  s_rs_pos += step;
+  while (s_rs_pos >= 0x10000u) {
+    s_rs_pos -= 0x10000u;
+    s_rs_s0 = s_rs_s1;
+    s_rs_s1 = source_sample();
+  }
+  return v;
+}
+
+static uint32_t rate_step(uint32_t out_rate) {
+  return (uint32_t)(((uint64_t)source_rate() << 16) / out_rate);
+}
+
+/* One VBL of YM pairs. A YM source goes through as it is. */
+static void produce_ym(uint8_t *dst) {
+  if (s_fill_cb != NULL) {
+    s_fill_cb(dst, AUDIO_FILL_BYTES_PER_VBL);
+    return;
+  }
+  uint32_t step = rate_step(AUDIO_NATIVE_RATE_HZ);
+  for (uint32_t i = 0; i < AUDIO_FILL_SAMPLES_PER_VBL; i++) {
+    uint32_t index = (uint32_t)(resample(step) + 128) >> 2;
+    dst[2u * i] = k_ghost_pairs[index][0];
+    dst[2u * i + 1u] = k_ghost_pairs[index][1];
+  }
+}
+
+/* `n` samples for the DMA chip. */
+static void produce_pcm(int8_t *dst, uint32_t n) {
+  uint32_t step = rate_step(CART_AUDIO_DMA_RATE_HZ);
+  for (uint32_t i = 0; i < n; i++) dst[i] = (int8_t)resample(step);
+}
+
+/* --- The outputs ----------------------------------------------------------- */
+
+static void write_audio_out(void) {
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_AUDIO_OUT_OFFSET)) =
+      (uint16_t)(s_prefer_ym ? CART_AUDIO_OUT_YM : CART_AUDIO_OUT_AUTO);
+}
+
+/* The output for the ST that just said hello: the ST applies the same rule
+ * (userfw.s, .sound_ym). The writer waits while the state starts over. */
+static void select_output(uint8_t machine) {
+  audio_out_t out = (!s_prefer_ym && (machine >> 4) == 1u) ? AUDIO_OUT_DMA
+                                                           : AUDIO_OUT_YM;
+  s_out = AUDIO_OUT_NONE;
+  __dmb();
+  s_fifo_head = s_fifo_tail = 0;
+  s_dma_head = s_dma_tail = 0;
+  s_st_known = false;
+  s_dma_known = false;
+  s_hold[0] = s_hold[1] = 0;
+  s_dma_hold = 0;
+  source_restart();
+  /* The ST copies the mirror before the RP has seen its first report: let
+   * that be silence, not the last session's sound. */
+  memset(s_audio_buf, 0, CART_AUDIO_BUFFER_SIZE);
+  __dmb();
+  s_out = out;
+  audioOutput = out == AUDIO_OUT_DMA ? 2u : 1u;
+  DPRINTF("audio: machine $%02X, %s\n", (unsigned)machine,
+          out == AUDIO_OUT_DMA ? "DMA sound, 12,517 Hz" : "YM, 5,585 Hz");
+}
+
 void audio_init(void) {
   uint8_t *base = (uint8_t *)&__rom_in_ram_start__;
   s_audio_buf = base + CART_AUDIO_BUFFER_OFFSET;
   s_fill_cb = NULL;
+  s_pcm_cb = NULL;
   s_yms_open = false;
-
-  /* ERASE_FIRMWARE_IN_RAM at emul_start already zeroed the cart
-   * buffer (= silence on YM). With no callback installed, the
-   * buffer stays zero until an app calls audio_play_loop() or
-   * audio_set_fill_callback(). */
+  build_pair_pcm();
+  write_audio_out();
+  s_hellos_seen = st_session_hellos();
+  select_output(st_session_machine());
 
   add_repeating_timer_us(-AUDIO_WRITER_PERIOD_US, audio_writer, NULL,
                          &s_writer_timer);
 
-  DPRINTF("audio_init: %u slices of %u B at offset $%04X, %u B/VBL, "
+  DPRINTF("audio_init: %u B at offset $%04X; YM %u slices of %u B, "
           "FIFO %u VBLs\n",
+          (unsigned)CART_AUDIO_BUFFER_SIZE, (unsigned)CART_AUDIO_BUFFER_OFFSET,
           (unsigned)CART_AUDIO_SLICES, (unsigned)CART_AUDIO_SLICE_BYTES,
-          (unsigned)CART_AUDIO_BUFFER_OFFSET,
-          (unsigned)AUDIO_FILL_BYTES_PER_VBL, (unsigned)AUDIO_FIFO_SLICES);
+          (unsigned)AUDIO_FIFO_SLICES);
 }
 
+void audio_prefer_ym(bool prefer) {
+  s_prefer_ym = prefer;
+  write_audio_out();
+  DPRINTF("audio: %s from the next ST boot\n",
+          prefer ? "the YM" : "the DMA chip where there is one");
+}
+
+bool audio_uses_dma(void) { return s_out == AUDIO_OUT_DMA; }
+
+/* --- Sources ----------------------------------------------------------------- */
+
 void audio_set_fill_callback(audio_fill_cb_t cb) {
+  s_pcm_cb = NULL;
   s_fill_cb = cb;
+  source_restart();
+}
+
+void audio_set_pcm_callback(audio_pcm_cb_t cb, uint32_t rate_hz) {
+  s_fill_cb = NULL;
+  s_pcm_rate = rate_hz != 0u ? rate_hz : CART_AUDIO_DMA_RATE_HZ;
+  s_pcm_cb = cb;
+  source_restart();
 }
 
 static void audio_loop_cb(uint8_t *buf, uint32_t bytes) {
@@ -160,7 +422,25 @@ void audio_play_loop(const uint8_t *data, uint32_t bytes) {
   s_loop_data = data;
   s_loop_bytes = bytes;
   s_loop_pos = 0;
-  s_fill_cb = audio_loop_cb;
+  audio_set_fill_callback(audio_loop_cb);
+}
+
+static void audio_pcm_loop_cb(int8_t *buf, uint32_t samples) {
+  for (uint32_t i = 0; i < samples; i++) {
+    buf[i] = s_pcm_loop_data[s_pcm_loop_pos];
+    if (++s_pcm_loop_pos >= s_pcm_loop_samples) s_pcm_loop_pos = 0;
+  }
+}
+
+void audio_play_pcm_loop(const int8_t *pcm, uint32_t samples, uint32_t rate_hz) {
+  if (pcm == NULL || samples == 0u) {
+    audio_set_fill_callback(NULL);
+    return;
+  }
+  s_pcm_loop_data = pcm;
+  s_pcm_loop_samples = samples;
+  s_pcm_loop_pos = 0;
+  audio_set_pcm_callback(audio_pcm_loop_cb, rate_hz);
 }
 
 static void audio_yms_cb(uint8_t *buf, uint32_t bytes) {
@@ -243,12 +523,16 @@ int audio_play_yms_file(const char *path) {
 
   s_yms_open = true;
   s_yms_data_offset = AUDIO_YMS_HEADER_SIZE;
-  s_fill_cb = audio_yms_cb;
+  audio_set_fill_callback(audio_yms_cb);
 
   DPRINTF("audio_play_yms_file: '%s' streaming (rate %lu Hz, mode %u)\n",
           path, (unsigned long)rate, (unsigned)hdr[12]);
   return 0;
 }
+
+/* --- The writers (timer interrupt) -------------------------------------------- */
+
+static bool source_set(void) { return s_fill_cb != NULL || s_pcm_cb != NULL; }
 
 /* Write the slice for the ST's VBL number `vbl`: one VBL of samples from
  * the FIFO, then the last sample held to the end of the slice (Timer-B may
@@ -266,7 +550,7 @@ static void __not_in_flash_func(audio_write_slice)(uint32_t vbl) {
     s_hold[1] = src[AUDIO_FILL_BYTES_PER_VBL - 1u];
     s_fifo_tail = tail + 1u;
     filled = AUDIO_FILL_BYTES_PER_VBL;
-  } else if (s_fill_cb != NULL) {
+  } else if (source_set()) {
     audioUnderruns++;
   }
   for (uint32_t i = filled; i < CART_AUDIO_SLICE_BYTES; i += 2u) {
@@ -276,25 +560,42 @@ static void __not_in_flash_func(audio_write_slice)(uint32_t vbl) {
   audioSlicesWritten++;
 }
 
-/* The slice writer, every AUDIO_WRITER_PERIOD_US in a timer interrupt: find
- * the slice the ST plays from its latest report, and write the
- * AUDIO_SLICES_AHEAD slices after it. Everything it touches is in RAM. */
-static bool __not_in_flash_func(audio_writer)(repeating_timer_t *timer) {
-  (void)timer;
-  uint16_t report;
-  if (!commemul_latest(CART_ROM3_WINDOW_MASK, CART_ROM3_AUDIO_SLICE_WINDOW,
-                       AUDIO_REPORT_LOOKBACK, &report)) {
-    return true; /* the ST is not playing: nothing to follow */
+/* The latest report in `window`, and whether it is new since the last
+ * call (`fresh`). */
+typedef enum {
+  REPORT_NONE,  /* none in the ring: the ST is not playing */
+  REPORT_STALE, /* none new for AUDIO_REPORT_TIMEOUT_US: the ST left userfw */
+  REPORT_OK,
+} report_t;
+
+static report_t __not_in_flash_func(latest_report)(uint16_t window,
+                                                   uint16_t *report,
+                                                   bool *fresh) {
+  if (!commemul_latest(CART_ROM3_WINDOW_MASK, window, AUDIO_REPORT_LOOKBACK,
+                       report)) {
+    return REPORT_NONE;
   }
   uint32_t now_us = time_us_32();
-  if (report != s_last_report) {
-    s_last_report = report;
+  *fresh = *report != s_last_report;
+  if (*fresh) {
+    s_last_report = *report;
     s_last_report_us = now_us;
   } else if (now_us - s_last_report_us > AUDIO_REPORT_TIMEOUT_US) {
-    s_st_known = false; /* stale: the ST stopped playing */
-    return true;
+    return REPORT_STALE;
   }
+  return REPORT_OK;
+}
 
+/* The YM: find the slice the ST plays from its latest report, and write the
+ * AUDIO_SLICES_AHEAD slices after it. */
+static void __not_in_flash_func(ym_writer)(void) {
+  uint16_t report;
+  bool fresh;
+  report_t r = latest_report(CART_ROM3_AUDIO_SLICE_WINDOW, &report, &fresh);
+  if (r != REPORT_OK) {
+    if (r == REPORT_STALE) s_st_known = false; /* the ST stopped playing */
+    return;
+  }
   uint32_t slice = report & (CART_AUDIO_SLICES - 1u);
   if (!s_st_known) {
     s_st_known = true;
@@ -315,17 +616,102 @@ static bool __not_in_flash_func(audio_writer)(repeating_timer_t *timer) {
     audio_write_slice(s_next_vbl);
     s_next_vbl++;
   }
+}
+
+/* The DMA chip: at each report the ST has just copied the mirror up to
+ * CART_AUDIO_DMA_LEAD ahead of where the chip plays; keep writing it
+ * AUDIO_DMA_AHEAD ahead of where it plays now, from the FIFO or, when that
+ * is empty, the last sample held. Byte i of the ring is byte i ^ 1 of the
+ * buffer. */
+static void __not_in_flash_func(dma_writer)(void) {
+  uint16_t report;
+  bool fresh;
+  report_t r = latest_report(CART_ROM3_DMA_POS_WINDOW, &report, &fresh);
+  if (r != REPORT_OK) {
+    if (r == REPORT_STALE) s_dma_known = false;
+    return;
+  }
+  uint32_t play = (report & 0xFFu) * 8u;
+  if (!s_dma_known) {
+    s_dma_known = true;
+    s_dma_front = (play + CART_AUDIO_DMA_LEAD) & AUDIO_DMA_RING_MASK;
+  } else if (fresh) {
+    audioSlicesWritten++;
+    uint32_t ahead = (s_dma_front - play) & AUDIO_DMA_RING_MASK;
+    if (ahead < CART_AUDIO_DMA_LEAD || ahead > CART_AUDIO_DMA_RING_BYTES / 2u) {
+      /* The ST copied what the RP had not written yet. */
+      audioLateSlices++;
+      s_dma_front = (play + CART_AUDIO_DMA_LEAD) & AUDIO_DMA_RING_MASK;
+    }
+  }
+  uint32_t since_us = time_us_32() - s_last_report_us;
+  if (since_us > AUDIO_DMA_EST_MAX_US) since_us = AUDIO_DMA_EST_MAX_US;
+  uint32_t now_at = play + since_us * CART_AUDIO_DMA_RATE_HZ / 1000000u;
+  uint32_t target = (now_at + AUDIO_DMA_AHEAD) & AUDIO_DMA_RING_MASK;
+  uint32_t n = (target - s_dma_front) & AUDIO_DMA_RING_MASK;
+  if (n > CART_AUDIO_DMA_RING_BYTES / 2u) return; /* already that far */
+  bool held = false;
+  uint32_t front = s_dma_front;
+  uint32_t tail = s_dma_tail;
+  uint32_t head = s_dma_head;
+  for (uint32_t i = 0; i < n; i++) {
+    if (tail != head) {
+      s_dma_hold = s_dma_fifo[tail % AUDIO_DMA_FIFO_BYTES];
+      tail++;
+    } else {
+      held = true;
+    }
+    s_audio_buf[front ^ 1u] = (uint8_t)s_dma_hold;
+    front = (front + 1u) & AUDIO_DMA_RING_MASK;
+  }
+  s_dma_tail = tail;
+  s_dma_front = front;
+  if (held && source_set()) audioUnderruns++;
+}
+
+/* Every AUDIO_WRITER_PERIOD_US in a timer interrupt. Everything it touches
+ * is in RAM. */
+static bool __not_in_flash_func(audio_writer)(repeating_timer_t *timer) {
+  (void)timer;
+  audio_out_t out = s_out;
+  if (out == AUDIO_OUT_YM) {
+    ym_writer();
+  } else if (out == AUDIO_OUT_DMA) {
+    dma_writer();
+  }
   return true;
 }
 
+/* --- The main loop's part ------------------------------------------------------ */
+
 void audio_render_frame(void) {
-  if (s_fill_cb == NULL) {
+  /* A new ST session: the output it plays through. */
+  uint32_t hellos = st_session_hellos();
+  if (hellos != s_hellos_seen) {
+    s_hellos_seen = hellos;
+    select_output(st_session_machine());
+  }
+  if (!source_set()) {
+    return;
+  }
+  if (s_out == AUDIO_OUT_DMA) {
+    /* Top up the FIFO a chunk at a time: the writer reads only the samples
+     * below s_dma_head. */
+    while (AUDIO_DMA_FIFO_BYTES - (s_dma_head - s_dma_tail) >= AUDIO_PCM_CHUNK) {
+      int8_t chunk[AUDIO_PCM_CHUNK];
+      produce_pcm(chunk, AUDIO_PCM_CHUNK);
+      uint32_t head = s_dma_head;
+      for (uint32_t i = 0; i < AUDIO_PCM_CHUNK; i++) {
+        s_dma_fifo[(head + i) % AUDIO_DMA_FIFO_BYTES] = chunk[i];
+      }
+      __dmb();
+      s_dma_head = head + AUDIO_PCM_CHUNK;
+    }
     return;
   }
   /* Top up the FIFO: the writer reads only the slices below s_fifo_head. */
   while (s_fifo_head - s_fifo_tail < AUDIO_FIFO_SLICES) {
-    s_fill_cb(s_fifo[s_fifo_head % AUDIO_FIFO_SLICES],
-              AUDIO_FILL_BYTES_PER_VBL);
+    produce_ym(s_fifo[s_fifo_head % AUDIO_FIFO_SLICES]);
     __dmb();
     s_fifo_head = s_fifo_head + 1u;
   }

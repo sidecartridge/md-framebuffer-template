@@ -30,7 +30,8 @@ lifting:** a dual (page-flipped) framebuffer on the Atari ST side
 blank; **~19 ms of compute every VBL** to draw your frame; chunked
 drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
 conversion done for you in **~1 ms per VBL** (split across both cores);
-**~6 kHz, 6-bit sampled sound** out the YM2149; and the Atari ST
+sampled sound (8-bit 12.5 kHz through the DMA chip on an STE / Mega STE,
+~6 kHz 6-bit out the YM2149 elsewhere); and the Atari ST
 keyboard, mouse and joysticks handled on the RP2040, delivered to your app
 as key events, mouse movement and stick states.
 
@@ -97,8 +98,11 @@ ikbd_joystick_t j; ikbd_read_joystick(1, &j);  // j.state / j.pressed: IKBD_JOY_
 // audio: audio.h
 audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
 audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL of samples, live
+audio_play_pcm_loop(pcm, n, rate);             // or signed 8-bit PCM at any rate
+audio_set_pcm_callback(cb, AUDIO_DMA_RATE_HZ);  // (either kind plays on both outputs)
 audio_render_frame();                          // every loop iteration: tops up the FIFO
-                                               // (80 ms of stall allowed, 120 ms latency)
+                                               // (80 ms of stall allowed; 120 ms latency
+                                               // on the YM, ~175 ms on the DMA chip)
 ```
 
 **SD card:** the microSD is already mounted at boot

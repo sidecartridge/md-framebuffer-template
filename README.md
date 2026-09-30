@@ -23,7 +23,9 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
   framework does the chunked → Atari ST planar conversion for you.
 - **~1 ms per VBL** for that chunky→planar conversion (split across both
   cores), so it barely eats into your frame budget.
-- **~6 kHz, 6-bit sampled sound** out the YM2149.
+- **Sampled sound**: 8-bit at 12.5 kHz through the DMA sound chip on an
+  STE or a Mega STE, ~6 kHz 6-bit out the YM2149 elsewhere — the same
+  asset plays on both.
 - **Atari ST keyboard, mouse and joysticks handled on the RP2040** —
   decoded scancodes, mouse movement and stick states delivered straight to
   your app.
@@ -301,10 +303,13 @@ your own graphics.
 
 ## 5. Audio (`audio.h`)
 
-The ST plays one VBL of samples from a 1 KB cart buffer into the YM2149
-every VBL, and the RP writes the next ones from a timer interrupt, so the
-sound never tears and never repeats, whatever your frame rate. You supply
-the bytes one of two ways.
+On an STE or a Mega STE the sound goes through the DMA sound chip (8-bit,
+12,517 Hz, no interrupt per sample); on a plain ST or Mega ST it goes
+through the YM2149 (~6-bit, 5,585 Hz). The template picks the output at
+every ST boot, and the RP writes the samples ahead of what the ST plays
+from a timer interrupt, so the sound never tears and never repeats,
+whatever your frame rate. Your audio is YM volume pairs or 8-bit PCM, and
+either plays on both outputs: the RP converts at runtime.
 
 ### Loop a baked-in buffer
 
@@ -316,6 +321,24 @@ audio_init();               // once at boot
 audio_play_loop(audio_sample_data, sizeof(audio_sample_data));
 // ... then call audio_render_frame() once per main-loop iteration.
 ```
+
+### 8-bit PCM
+
+For a recording at its best on the DMA chip, convert it to signed 8-bit
+PCM at 12,517 Hz (`tools/wav_to_ym4.py --mode pcm --target-rate 12517
+--header-output my_sound.h my_sound.wav`), or generate PCM live at any
+rate; on the YM the RP plays its upper 6 bits through the same table:
+
+```c
+#include "my_sound.h"       // audio_sample_data[], AUDIO_SAMPLE_RATE_HZ
+audio_play_pcm_loop(audio_sample_data, audio_sample_count, AUDIO_SAMPLE_RATE_HZ);
+
+static void my_pcm(int8_t *buf, uint32_t samples) { /* ... */ }
+audio_set_pcm_callback(my_pcm, AUDIO_DMA_RATE_HZ);
+```
+
+`audio_prefer_ym(true)` keeps an STE on the YM from its next boot;
+`audio_uses_dma()` says which output plays.
 
 ### Generate audio live (callback)
 
@@ -334,7 +357,7 @@ Either way, **`audio_render_frame()` must be called each loop iteration**:
 it tops up a small FIFO (4 VBLs of samples) that the interrupt plays from.
 Your loop may take up to 80 ms between two calls without the sound
 noticing; a sample reaches the speaker at most 120 ms after your callback
-made it. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
+made it on the YM, about 175 ms on the DMA chip. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
 from SD — see §7.
 
 ---

@@ -14,6 +14,19 @@
   (`AUDIO_FIFO_SLICES`). When nothing is ready the last sample is held, never stale
   sound, and `audioUnderruns` counts it.
 
+### STE DMA sound
+
+- On an STE or a Mega STE the sound plays through the DMA sound chip: 8-bit at 12,517 Hz, no
+  interrupt per sample. The ST copies each VBL's samples into a 2 KB ring in its RAM (below the
+  screen pages); Timer-B stays off, which gives the ST 1.6 ms of every frame back: a mouse moved
+  fast no longer costs frames there. A plain ST or Mega ST plays through the YM as before, from
+  the same firmware.
+- Apps give 8-bit PCM at any rate (`audio_play_pcm_loop()`, `audio_set_pcm_callback()`) or YM
+  pairs as before; either plays on both outputs, converted on the RP. `audio_prefer_ym()` keeps
+  an STE on the YM; `tools/wav_to_ym4.py --mode pcm` writes PCM headers.
+- The audio buffer in the cartridge window grows to 2 KB: `APP_FREE` starts at `$FA4980`
+  (about 14.4 KB).
+
 ### Mouse and joysticks
 
 - Apps get the mouse and both joysticks next to the keyboard, decoded on the RP: pick an
@@ -45,7 +58,7 @@
 - Host tests: `make -C tests/host test` checks the pure logic on the host, and CI runs it on
   every pull request: the blits' clipping, the framebuffer layout from the chunky buffer to
   the ST's screen, the agreement of the ST's and the RP's copies of every shared constant, the
-  sample converter, the audio slices and the IKBD decoder.
+  sample converter, the audio slices, the DMA sound output and the IKBD decoder.
 - The cartridge window's layout lives in one m68k include, `inc/sidecart_layout.s`, which
   `main.s` and `userfw.s` share; `userfw.s` no longer repeats its addresses.
 

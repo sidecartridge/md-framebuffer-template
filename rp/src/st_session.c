@@ -56,6 +56,8 @@ bool st_session_consume_boot(void) {
 
 uint8_t st_session_machine(void) { return s_machine; }
 
+uint32_t st_session_hellos(void) { return stSessionHellos; }
+
 uint16_t st_session_tos_version(void) { return s_tos_version; }
 
 void st_session_veto_boot(const char *reason) {

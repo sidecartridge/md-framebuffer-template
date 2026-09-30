@@ -5,6 +5,7 @@ length it resamples to, and a .YMS file the RP's reader (audio.c) accepts."""
 import importlib.util
 import math
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -43,6 +44,57 @@ class Table(unittest.TestCase):
         self.assertEqual(ym._float_to_ym_dual_ghost([0.0]), mid)
         self.assertEqual(ym._float_to_ym_dual_ghost([5.0]), list(ym.GHOSTBUSTERS_LUT[63]))
         self.assertEqual(ym._float_to_ym_dual_ghost([-5.0]), list(ym.GHOSTBUSTERS_LUT[0]))
+
+
+class Pcm(unittest.TestCase):
+    """--mode pcm: signed 8-bit samples for audio_play_pcm_loop()."""
+
+    def test_values(self):
+        self.assertEqual(ym._float_to_pcm8([0.0, 1.0, -1.0, 0.5, 9.0, -9.0]),
+                         [0, 127, -127, 64, 127, -127])
+
+    def test_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = os.path.join(tmp, "in.wav")
+            with wave.open(wav, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(1)
+                w.setframerate(12517)
+                w.writeframes(bytes([128, 255, 1, 192]))
+            out = os.path.join(tmp, "pcm.h")
+            subprocess.run([sys.executable, TOOL, wav, "--mode", "pcm", "--target-rate",
+                            "12517", "--header-output", out, "--symbol", "tone"],
+                           check=True, capture_output=True)
+            text = open(out).read()
+            self.assertIn("static const int8_t tone[] = {", text)
+            self.assertIn("#define AUDIO_SAMPLE_RATE_HZ 12517u", text)
+            body = text[text.index("{") + 1:text.index("};")]
+            self.assertEqual([int(v) for v in body.replace(",", " ").split()], [0, 126, -126, 64])
+            refused = subprocess.run([sys.executable, TOOL, wav, "--mode", "pcm",
+                                      "--yms-output", os.path.join(tmp, "x.yms")],
+                                     capture_output=True)
+            self.assertNotEqual(refused.returncode, 0)
+
+
+class RpTables(unittest.TestCase):
+    """audio.c converts at runtime with copies of the tool's tables."""
+
+    def _c_array(self, name):
+        text = open(os.path.join(RP_SRC, "audio.c")).read()
+        body = text[text.index(name):]
+        body = body[body.index("{") + 1:body.index("};")]
+        return [int(n) for n in re.findall(r"-?\d+", body)]
+
+    def test_pairs(self):
+        flat = self._c_array("k_ghost_pairs[64][2]")
+        self.assertEqual(list(zip(flat[0::2], flat[1::2])), [tuple(p) for p in ym.GHOSTBUSTERS_LUT])
+
+    def test_ym_curve(self):
+        amps = self._c_array("k_ym_amp[16]")
+        want = [0] + [round(10000 * 2.0 ** ((v - 15) / 2.0)) for v in range(1, 16)]
+        for got, w in zip(amps, want):
+            self.assertLessEqual(abs(got - w), 1)
+        self.assertEqual(len(amps), 16)
 
 
 class Resample(unittest.TestCase):

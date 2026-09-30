@@ -14,11 +14,12 @@
 ;   $FA400C  FB_FRAME_COUNTER_ADDR      4 B   bumped as the last write of a publish
 ;   $FA4010  SHARED_VARIABLES           240 B (60 x 4-byte slots, the app's)
 ;   $FA4018  IKBD_OUT_ADDR              16 B  (slots 2..5: IKBD commands from the RP)
+;   $FA4028  AUDIO_OUT_ADDR             2 B   (slot 6: the RP keeps the ST to the YM)
 ;   $FA4040  PALETTE_ADDR               32 B  (slots 12..19: 16 palette words)
-;   $FA4100  AUDIO_BUFFER_ADDR          1024 B (YM volume pairs)
-;   $FA4500  BOOT_STATUS_ADDR           2 B   read once in pre_auto: 0 = start
-;   $FA4502  BOOT_MESSAGE_ADDR          126 B why the RP refused; printed before GEM
-;   $FA4580  APP_FREE_ADDR              ~15.4 KB for the app, up to the framebuffer
+;   $FA4100  AUDIO_BUFFER_ADDR          2048 B (YM volume pairs, or DMA samples)
+;   $FA4900  BOOT_STATUS_ADDR           2 B   read once in pre_auto: 0 = start
+;   $FA4902  BOOT_MESSAGE_ADDR          126 B why the RP refused; printed before GEM
+;   $FA4980  APP_FREE_ADDR              ~14.4 KB for the app, up to the framebuffer
 ;   $FA8300  FRAMEBUFFER_ADDR           32000 B (320x200 4bpp, flush at the top)
 ;   $FAFFFF  end of the window
 
@@ -52,26 +53,40 @@ IKBD_OUT_BUSY_BIT       equ 15
 PALETTE_ADDR            equ (SHARED_BLOCK_ADDR + $40)                  ; $FA4040
 PALETTE_SIZE            equ 32                                         ; 16 words
 
-; Audio: (vA, vB) YM volume pairs, one pair per Timer-B interrupt, in
-; AUDIO_SLICES slices of one VBL each. The VBL handler points A0 at the next
-; slice and tells the RP which one (AUDIO_SLICE_WINDOW); the RP writes the
-; slices ahead of it, never the one playing.
+; Audio, two ways. On an STE or a Mega STE the DMA sound chip plays 8-bit
+; samples at 12,517 Hz from a ring in ST RAM (userfw's UFW_DMA_RING), which
+; userfw fills every VBL from the audio buffer, its mirror: the ST reports
+; where the chip plays (DMA_POS_WINDOW), copies the mirror from its last copy
+; to AUDIO_DMA_LEAD bytes ahead of that, and the RP writes the mirror further
+; ahead still. Elsewhere Timer-B plays (vA, vB) YM volume pairs, one pair per
+; interrupt, from the first AUDIO_SLICES slices of the buffer, one VBL each:
+; the VBL handler points A0 at the next slice and tells the RP which one
+; (AUDIO_SLICE_WINDOW); the RP writes the slices ahead of it.
 AUDIO_BUFFER_ADDR       equ (SHARED_BLOCK_ADDR + $100)                 ; $FA4100
-AUDIO_BUFFER_SIZE       equ 1024
-AUDIO_BUFFER_END        equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)    ; $FA4500
+AUDIO_BUFFER_SIZE       equ 2048
+AUDIO_BUFFER_END        equ (AUDIO_BUFFER_ADDR + AUDIO_BUFFER_SIZE)    ; $FA4900
 AUDIO_SLICES            equ 4
 AUDIO_SLICE_BYTES       equ 256         ; one VBL is 224 of them at ~5,585 Hz
 AUDIO_SLICE_SHIFT       equ 8           ; log2(AUDIO_SLICE_BYTES)
+AUDIO_DMA_RING_BYTES    equ AUDIO_BUFFER_SIZE   ; 8 VBLs at 12,517 Hz
+AUDIO_DMA_LEAD          equ 768         ; 3 VBLs: a missed VBL still finds samples
+
+; Which way the ST plays the sound, as the RP asks (a word, read once at
+; boot): AUDIO_OUT_AUTO takes the DMA chip when the machine has one,
+; AUDIO_OUT_YM keeps to the YM. Slot 6 of SHARED_VARIABLES.
+AUDIO_OUT_ADDR          equ (SHARED_VARIABLES + (6 * 4))               ; $FA4028
+AUDIO_OUT_AUTO          equ 0
+AUDIO_OUT_YM            equ 1
 
 ; Boot block. The RP can refuse to start the app (st_session_veto_boot()): a
 ; non-zero status makes pre_auto print the NUL-terminated message and return
 ; to GEM.
-BOOT_STATUS_ADDR        equ AUDIO_BUFFER_END                           ; $FA4500
-BOOT_MESSAGE_ADDR       equ (BOOT_STATUS_ADDR + 2)                     ; $FA4502
+BOOT_STATUS_ADDR        equ AUDIO_BUFFER_END                           ; $FA4900
+BOOT_MESSAGE_ADDR       equ (BOOT_STATUS_ADDR + 2)                     ; $FA4902
 BOOT_MESSAGE_SIZE       equ 126
 
 ; The app's own buffers, up to the framebuffer.
-APP_FREE_ADDR           equ (BOOT_MESSAGE_ADDR + BOOT_MESSAGE_SIZE)    ; $FA4580
+APP_FREE_ADDR           equ (BOOT_MESSAGE_ADDR + BOOT_MESSAGE_SIZE)    ; $FA4980
 
 ; 320x200 low resolution, 4 bitplanes, at the top of the window so that an
 ; overrun walks off its end rather than over the block above.
@@ -107,3 +122,4 @@ ST_TOS_HI_WINDOW        equ (ROMCMD_START_ADDR + $8900)  ; + TOS version, high b
 ST_TOS_LO_WINDOW        equ (ROMCMD_START_ADDR + $8A00)  ; + TOS version, low byte
 FB_SLACK_HI_WINDOW      equ (ROMCMD_START_ADDR + $8B00)  ; + when the blit ended, high byte (FB_SLACK_REPORT)
 FB_SLACK_LO_WINDOW      equ (ROMCMD_START_ADDR + $8C00)  ; + when the blit ended, low byte
+DMA_POS_WINDOW          equ (ROMCMD_START_ADDR + $8D00)  ; + where the DMA chip plays, / 8
