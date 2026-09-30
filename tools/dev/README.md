@@ -14,8 +14,12 @@ Python tools use the standard library only.
   by symbol. The symbols never reach the `.uf2`.
 - Every build carries its build ID in flash as `release_build_id` (`rp/src/build_id.cmake`).
 - The counters `swd.py counters` reads are plain variables: `stSessionHellos` (st_session.c),
-  `fb_frame_tick`, `s_vbl_seen` and `fbAckTimeouts` (fb.c), `ikbdOverruns` (ikbd.c) and
-  `commOverruns` (commemul.c).
+  `fb_frame_tick`, `s_vbl_seen` and `fbAckTimeouts` (fb.c), `ikbdOverruns`, `ikbdBytes`,
+  `ikbdMousePackets`, `ikbdJoystickPackets`, `ikbdResyncs`, `ikbdCountMismatches` and
+  `ikbdPowerUps` (ikbd.c), `commOverruns` (commemul.c), and `audioSlicesWritten`,
+  `audioLateSlices` and `audioUnderruns` (audio.c). Debug builds also keep `ikbdLog` /
+  `ikbdLogCount` (ikbd.c, for `ikbd-log`) and, when `userfw.s` reports it, the blit slack
+  (`fbSlackHist`, `fbSlackMinUs`, `fbSlackLate` in fb.c).
 - Debug builds carry the devhooks mailbox (`rp/src/include/devhooks.h`, included once from
   `emul.c`, served by `devhooks_poll()` in the main loop), which `key` and `app` write.
 
@@ -98,6 +102,7 @@ python3 tools/dev/swd.py running tools/dev/builds/debug/rp.elf   # booted this f
 python3 tools/dev/swd.py verify tools/dev/builds/debug/rp.elf    # flash identical to the ELF?
 python3 tools/dev/swd.py build-id                                # which build is on the RP?
 python3 tools/dev/swd.py counters --watch 2                      # frames, blits, overruns, per second
+python3 tools/dev/swd.py ikbd-log ikbd.txt --seconds 60          # record the IKBD stream (debug)
 python3 tools/dev/swd.py heap --watch 5 --csv tools/dev/logs/heap.csv
 python3 tools/dev/swd.py shared                                  # the window's shared block
 python3 tools/dev/swd.py fb screen.png                           # what the ST shows, as a PNG
@@ -115,11 +120,23 @@ python3 tools/dev/swd.py resume                                  # release cores
 
 `counters` reads, without halting: the ST's hellos, the frames published, the blits the ST
 acknowledged, the publishes that gave up waiting for an acknowledgement (`fbAckTimeouts`: expected
-until the ST runs the app, never while it does), the IKBD bytes the keyboard ACIA lost, the ROM3
-ring's overruns, and the audio slices written, late (`audioLateSlices`) and underrun
-(`audioUnderruns`). `--watch SECONDS` prints what changed, with the frame, blit and audio slice
-rates: frames and blits run at 50 a second while the ST runs the app and the app publishes every
-frame; audio slices run at 50 a second whatever the frame rate.
+until the ST runs the app, never while it does), the keyboard ACIA's overruns, the IKBD bytes and
+the mouse and joystick packets decoded, the decoder's resyncs and how many were byte-count
+mismatches, the IKBD's restarts (a keyboard plugged back in), the ROM3 ring's overruns, and the
+audio slices written, late (`audioLateSlices`) and underrun (`audioUnderruns`). `--watch SECONDS`
+prints what changed, with the frame, blit, audio slice and IKBD byte rates: frames and blits run
+at 50 a second while the ST runs the app and the app publishes every frame (a mouse moved fast
+costs the ST some: see CLAUDE.md, "The ST's budget"); audio slices run at 50 a second whatever the
+frame rate.
+
+`ikbd-log OUT` (debug builds) records every sample the IKBD decoder sees, in order, for
+`--seconds` (Ctrl-C ends it early): one 16-bit sample per line, the ROM3 window in the high byte
+(`82` an IKBD byte, `83` the ST's byte count at a VBL, `85` an ACIA overrun, `87` a command string
+sent, `88` a hello, `01` a byte a host tool typed) and the value in the low byte. It reads the
+firmware's 2,048-sample log several times a second and says how many samples it missed; at the
+end it checks the ST's counts against the bytes between them, without the decoder. A script can
+record while it drives the app with the `IkbdLog` class, as long as only one OpenOCD runs at a
+time.
 
 `fb` writes the framebuffer as the ST shows it, in colour: it undoes the reversed 48-byte chunks
 the m68k's MOVEM blit needs, decodes the low-resolution planes and applies the published palette.
@@ -137,15 +154,20 @@ head of the audio buffer and the boot status with its message. The offsets come 
 `key` and `app` need a `debug` build. They write the devhooks mailbox (found by its
 `devhooksMailbox` symbol) and wait for the main loop to acknowledge it. `key` types on the ST's
 keyboard: each key, a scancode (`0x02`) or a name (`esc`, `return`, `space`, `up`, `down`, `left`,
-`right`, `1`-`0`, `a`-`z`...), is pressed and released (`--press` / `--release` for one half), and
-its bytes enter where the ST's own do, so the app cannot tell the difference. `app NAME [WORD]`
+`right`, `1`-`0`, `a`-`z`, `f1`-`f10`...), is pressed and released (`--press` / `--release` for one
+half), and its bytes enter with the ST's own (outside the ST's byte count), so the app cannot tell
+the difference. `app NAME [WORD]`
 runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo dispatcher
 (`demo.h`, `demo_dispatcher_devhook()`) has:
 
-- `demo N`: launch demo N (1-4); `menu`: back to the menu.
+- `demo N`: launch menu entry N (1-4 the demos, 5 the input test); `menu`: back to the menu.
 - `overlay 0|1`: the DRAW/C2P readout (the hidden `D` key).
 - `slow_frame MS`: every frame takes MS milliseconds longer (0 stops it): an app late with its
   frames, on demand. The sound and the publish handshake must survive it.
+- `input_mode N`: the input mode (0 keyboard, 1 mouse, 2 mouse + joystick 1, 3 joysticks), in any
+  demo.
+- `ikbd_cmd BYTE...`: IKBD command bytes (at most 12; `0` waits a VBL), sent by the ST one per
+  VBL: to try what an IKBD does, e.g. `ikbd_cmd 0x16` asks for both sticks' state.
 
 An app adds its own the same way: a `DEVHOOKS_APP_<NAME>` define and a handler set with
 `devhooks_setAppHandler()`.

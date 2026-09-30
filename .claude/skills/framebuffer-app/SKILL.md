@@ -21,7 +21,8 @@ Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
 games, demos, and console/computer emulations where the speed of putting
 a colourful 320×200 screen up matters. You draw a 320×200 16-colour
 framebuffer in the Pico's RAM and the firmware blits it to the ST each
-VBL (50 Hz), with keyboard input and YM audio for free.
+VBL (50 Hz), with keyboard, mouse and joystick input and YM audio for
+free.
 
 **You develop 100% on the RP2040 side — the framework does the heavy
 lifting:** a dual (page-flipped) framebuffer on the Atari ST side
@@ -29,8 +30,9 @@ lifting:** a dual (page-flipped) framebuffer on the Atari ST side
 blank; **~19 ms of compute every VBL** to draw your frame; chunked
 drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
 conversion done for you in **~1 ms per VBL** (split across both cores);
-**~6 kHz, 6-bit sampled sound** out the YM2149; and Atari ST keyboard
-handled on the RP2040 with decoded scancodes delivered to your app.
+**~6 kHz, 6-bit sampled sound** out the YM2149; and the Atari ST
+keyboard, mouse and joysticks handled on the RP2040, delivered to your app
+as key events, mouse movement and stick states.
 
 ## The model (read this first)
 
@@ -87,6 +89,11 @@ palette_set_entry(2, PALETTE_RGB(7, 0, 0));    // or palette_set(entries[16])
 fb_publish();                                  // once per frame, after drawing
 // input: ikbd.h
 ikbd_key_event_t k; while (ikbd_pop_key(&k)) { if (k.is_press) ... }  // k.scancode
+ikbd_set_input_mode(IKBD_INPUT_MOUSE);         // or _KEYBOARD (default), _MOUSE_JOY1,
+                                               // _JOYSTICKS; keys work in every mode
+ikbd_mouse_t m; ikbd_read_mouse(&m);           // once a frame: m.dx/dy since last read,
+                                               // m.buttons, m.pressed (clicks between reads)
+ikbd_joystick_t j; ikbd_read_joystick(1, &j);  // j.state / j.pressed: IKBD_JOY_UP..FIRE
 // audio: audio.h
 audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
 audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL of samples, live
@@ -154,6 +161,12 @@ while (true) {
 - **Never** edit the `pico-sdk/`, `pico-extras/`, `fatfs-sdk/`
   submodules — the build re-pins them. Don't add features to `main.c`
   (use `emul.c`).
+- **Input modes:** port 0 is the mouse or joystick 0, never both — pick
+  the mode (`ikbd_set_input_mode()`); it survives an ST reset and a
+  keyboard replug. Stick 1's fire is the right mouse button's wire. Every
+  IKBD byte costs the ST an interrupt (30–40 µs) out of ~0.27 ms of slack
+  after the full-screen blit: a mouse moved fast drops some frames to
+  30–40 fps (accepted; blit fewer lines if an app must hold 50).
 - **Palette:** index 0 = white (text/border), 15 = black (background);
   `PALETTE_RGB(r,g,b)` channels are 0..7. Re-publishing the palette each
   frame is cheap (colour-cycling).

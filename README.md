@@ -24,10 +24,11 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
 - **~1 ms per VBL** for that chunky→planar conversion (split across both
   cores), so it barely eats into your frame budget.
 - **~6 kHz, 6-bit sampled sound** out the YM2149.
-- **Atari ST keyboard handled on the RP2040** — decoded scancodes
-  delivered straight to your app.
+- **Atari ST keyboard, mouse and joysticks handled on the RP2040** —
+  decoded scancodes, mouse movement and stick states delivered straight to
+  your app.
 
-> This repo ships with a 4-demo showcase + an animated menu.
+> This repo ships with a 4-demo showcase, an input test and an animated menu.
 > This guide is about **starting your own app**: what to remove, the API
 > you keep, and a minimal example. For the build toolchain and flashing,
 > see the official docs:
@@ -97,7 +98,7 @@ rp/src/demo_parallax.c        rp/src/include/sidecart_logo.h
 rp/src/demo_3d.c              rp/src/include/sidecart_text.h
 rp/src/demo_sprites.c         rp/src/include/solid3d.h
 rp/src/demo_cojorotozoom.c    rp/src/include/sprites_data.h
-                              rp/src/include/cojo_texture.h
+rp/src/demo_input.c           rp/src/include/cojo_texture.h
                               rp/src/include/cojo_font.h
                               rp/src/include/diego_sprite.h
                               rp/src/include/uridium_surface.h
@@ -108,7 +109,7 @@ your *own* image/audio assets into headers.
 
 ### Files to **change**
 
-- **`rp/src/CMakeLists.txt`** — remove the five `demo_*.c` entries from
+- **`rp/src/CMakeLists.txt`** — remove the six `demo_*.c` entries from
   `target_sources(...)`. (You can also drop `hardware_interp` from
   `target_link_libraries` unless you use the SIO interpolator.)
 - **`rp/src/emul.c`** — the main loop currently drives the demo
@@ -126,7 +127,7 @@ your *own* image/audio assets into headers.
 | `fb_font.c/.h` + `font8x8.h` | text |
 | `palette.c/.h` | the 16-colour palette |
 | `audio.c/.h` | YM audio (loop a buffer or stream via callback) |
-| `ikbd.c/.h` | keyboard events |
+| `ikbd.c/.h` | keyboard events, the mouse and the joysticks (input modes) |
 
 Everything else (`main.c`, `commemul`, `romemul`, `ikbd`, `sdcard`,
 `select`, `reset`, `gconfig`/`aconfig`, `cart_shared.h`, `constants.h`,
@@ -334,11 +335,73 @@ it tops up a small FIFO (4 VBLs of samples) that the interrupt plays from.
 Your loop may take up to 80 ms between two calls without the sound
 noticing; a sample reaches the speaker at most 120 ms after your callback
 made it. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
-from SD — see §6.
+from SD — see §7.
 
 ---
 
-## 6. SD card (`sdcard.h` + FatFs)
+## 6. Keyboard, mouse and joysticks (`ikbd.h`)
+
+The ST forwards every byte its keyboard processor (the IKBD) sends, and the
+RP decodes them: keys arrive as events, the mouse and the joysticks as state
+you read once a frame.
+
+### Pick an input mode
+
+Port 0 takes the mouse or joystick 0, never both, so the app picks what the
+IKBD reports. The keyboard works in every mode.
+
+| Mode | Port 0 | Port 1 |
+| --- | --- | --- |
+| `IKBD_INPUT_KEYBOARD` (the default) | — | — |
+| `IKBD_INPUT_MOUSE` | mouse | — |
+| `IKBD_INPUT_MOUSE_JOY1` | mouse | joystick |
+| `IKBD_INPUT_JOYSTICKS` | joystick | joystick |
+
+`ikbd_set_input_mode()` takes a few VBLs: `ikbd_get_live_input_mode()` says
+when the ST has sent the IKBD its commands. The mode survives an ST reset
+and a keyboard plugged back in; keys held when the keyboard went away are
+released.
+
+```c
+ikbd_set_input_mode(IKBD_INPUT_MOUSE_JOY1);   // once
+
+// once per frame:
+ikbd_mouse_t m;
+ikbd_read_mouse(&m);                  // movement since the last read
+px += m.dx; py += m.dy;
+if (m.pressed & IKBD_MOUSE_LEFT) { /* clicked, even between two reads */ }
+
+ikbd_joystick_t j;
+ikbd_read_joystick(1, &j);            // port 1
+if (j.state & IKBD_JOY_LEFT) ship_x--;
+if (j.pressed & IKBD_JOY_FIRE) { /* fire pressed since the last read */ }
+```
+
+What the hardware decides:
+
+- Stick 0's fire is the left mouse button and stick 1's fire the right one:
+  the same wires. In `IKBD_INPUT_MOUSE_JOY1` the IKBD reports stick 1's
+  fire only as the right button; `ikbd_read_joystick(1)` shows it as fire.
+- A mouse left in port 0 in joystick mode moves stick 0.
+- The IKBD has no auto-repeat: one press and one release per key.
+- `ikbd_send_commands()` sends other IKBD commands, once the mode is live.
+
+Menu entry 5 (the input test) shows all of it live, with the counters.
+
+### What it costs the ST
+
+Every IKBD byte is an interrupt on the ST, 30-40 µs. The full-screen blit
+and the audio leave the ST about 0.27 ms of each VBL, so while the mouse
+moves fast (up to 9 bytes a VBL: the mouse modes set a threshold of 4 counts
+per packet) some blits end after the next VBL and that frame waits one: on a
+Mega ST, 50 frames a second at rest, 30-40 while the mouse moves flat out.
+The sound stays clean. `FB_SLACK_REPORT` in `userfw.s` measures the slack
+your app leaves (`tools/dev/README.md`); blitting fewer lines
+(`FB_COPY_LINES`, about 88 µs per line) buys more.
+
+---
+
+## 7. SD card (`sdcard.h` + FatFs)
 
 The cartridge has a microSD slot, and **the template already mounts it for
 you at boot** — so reading and writing files is just standard
@@ -388,7 +451,7 @@ and `sdcard_getMountedInfo(&total_mb, &free_mb)`.
 
 ---
 
-## 7. Per-app config (`aconfig`)
+## 8. Per-app config (`aconfig`)
 
 Each app gets a small key-value store in flash, **editable from the
 Booster app without recompiling** — handy for things like a working
@@ -425,7 +488,7 @@ settings_save(aconfig_getContext(), true);   // true = disable IRQs during the f
 
 ---
 
-## 8. The main loop, in one picture
+## 9. The main loop, in one picture
 
 ```
 emul_start():
@@ -436,8 +499,9 @@ emul_start():
 
     while (true):
         fb_pump_rom3();          // ROM3 ring -> IKBD + VBL frame-sync
-        ikbd_pump();             // decode key events
+        ikbd_pump();             // decode keys, mouse, joysticks
         while ikbd_pop_key(&k):  <handle key>
+        ikbd_read_mouse(&m);     <move things>   (in a mouse mode)
         <draw your frame into fb_chunked_buffer>
         fb_publish();            // tear-free 50 Hz hand-off to the ST
         audio_render_frame();    // refill the YM buffer
@@ -459,7 +523,8 @@ addressing, and a dual-core band split via `fb_core1_dispatch()`.
 
 - **Host tests**: `make -C tests/host test` runs the template's pure logic on your computer in a
   second or two: the blits' clipping, the framebuffer layout end to end (what you draw is what
-  the ST shows), the ST and RP copies of every shared constant, and the audio converter. CI runs
+  the ST shows), the ST and RP copies of every shared constant, the audio converter and slices,
+  and the IKBD decoder against a simulated keyboard losing bytes. CI runs
   them on every pull request. Add yours as `tests/host/test_*.c` (its first line names the
   firmware sources it compiles) or `test_*.py`.
 - **A constant both sides share** (a new block in the cartridge window, a new ROM3 signal) goes
