@@ -17,7 +17,7 @@ Python tools use the standard library only.
   `fb_frame_tick`, `s_vbl_seen` and `fbAckTimeouts` (fb.c), `ikbdOverruns`, `ikbdBytes`,
   `ikbdMousePackets`, `ikbdJoystickPackets`, `ikbdResyncs`, `ikbdCountMismatches` and
   `ikbdPowerUps` (ikbd.c), `commOverruns` (commemul.c), and `audioSlicesWritten`,
-  `audioLateSlices` and `audioUnderruns` (audio.c). Debug builds also keep `ikbdLog` /
+  `audioLateSlices`, `audioUnderruns` and `audioOutput` (audio.c). Debug builds also keep `ikbdLog` /
   `ikbdLogCount` (ikbd.c, for `ikbd-log`) and, when `userfw.s` reports it, the blit slack
   (`fbSlackHist`, `fbSlackMinUs`, `fbSlackLate` in fb.c).
 - Debug builds carry the devhooks mailbox (`rp/src/include/devhooks.h`, included once from
@@ -122,8 +122,9 @@ python3 tools/dev/swd.py resume                                  # release cores
 acknowledged, the publishes that gave up waiting for an acknowledgement (`fbAckTimeouts`: expected
 until the ST runs the app, never while it does), the keyboard ACIA's overruns, the IKBD bytes and
 the mouse and joystick packets decoded, the decoder's resyncs and how many were byte-count
-mismatches, the IKBD's restarts (a keyboard plugged back in), the ROM3 ring's overruns, and the
-audio slices written, late (`audioLateSlices`) and underrun (`audioUnderruns`). `--watch SECONDS`
+mismatches, the IKBD's restarts (a keyboard plugged back in), the ROM3 ring's overruns, the
+VBLs of sound written, late (`audioLateSlices`) and underrun (`audioUnderruns`), and the audio
+output (`audioOutput`: 1 the YM, 2 the STE's DMA chip). `--watch SECONDS`
 prints what changed, with the frame, blit, audio slice and IKBD byte rates: frames and blits run
 at 50 a second while the ST runs the app and the app publishes every frame (a mouse moved fast
 costs the ST some: see CLAUDE.md, "The ST's budget"); audio slices run at 50 a second whatever the
@@ -168,6 +169,10 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
   demo.
 - `ikbd_cmd BYTE...`: IKBD command bytes (at most 12; `0` waits a VBL), sent by the ST one per
   VBL: to try what an IKBD does, e.g. `ikbd_cmd 0x16` asks for both sticks' state.
+- `audio_out 0|1`: from the ST's next boot, the DMA chip where there is one (0) or the YM (1):
+  both outputs on one STE with a reset in between.
+- `tone HZ`: a sine through the PCM path, whose clicks are easy to hear; `tone 0` goes back to
+  `DEMO.YMS`.
 
 An app adds its own the same way: a `DEVHOOKS_APP_<NAME>` define and a handler set with
 `devhooks_setAppHandler()`.
