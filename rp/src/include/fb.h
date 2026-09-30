@@ -98,6 +98,18 @@ void fb_publish(void);
  *         the wait. */
 void fb_pump_rom3(void);
 
+/** @brief Who copies each frame to the ST's screen, from its next VBL on:
+ *         CART_BLIT_MODE_AUTO (the default: the blitter when the sound goes
+ *         through the DMA chip, the CPU when Timer-B plays it on the YM),
+ *         CART_BLIT_MODE_CPU (the 68000's MOVEM loop) or
+ *         CART_BLIT_MODE_BLITTER (the blitter on any sound path: about
+ *         1.4 ms of the ST's VBL back, but on the YM it breaks the sound;
+ *         for an app without any). The blitter owns the bus `piece` chunks
+ *         of 48 bytes at a time (0: the ST's default of 40, about 1 ms). An
+ *         ST without a blitter copies with the CPU whatever the mode.
+ *         Survives an ST reset. */
+void fb_set_copy_mode(uint8_t mode, uint8_t piece);
+
 /** @brief Microseconds the most recent fb_publish() spent in the
  *         chunky-to-planar conversion (dual-core c2p + chunk-reversed
  *         memcpy). Updated every fb_publish(); stale-by-one is fine

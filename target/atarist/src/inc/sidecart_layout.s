@@ -15,6 +15,7 @@
 ;   $FA4010  SHARED_VARIABLES           240 B (60 x 4-byte slots, the app's)
 ;   $FA4018  IKBD_OUT_ADDR              16 B  (slots 2..5: IKBD commands from the RP)
 ;   $FA4028  AUDIO_OUT_ADDR             2 B   (slot 6: the RP keeps the ST to the YM)
+;   $FA402C  BLIT_MODE_ADDR             2 B   (slot 7: the CPU or the blitter copies the screen)
 ;   $FA4040  PALETTE_ADDR               32 B  (slots 12..19: 16 palette words)
 ;   $FA4100  AUDIO_BUFFER_ADDR          2048 B (YM volume pairs, or DMA samples)
 ;   $FA4900  BOOT_STATUS_ADDR           2 B   read once in pre_auto: 0 = start
@@ -78,6 +79,16 @@ AUDIO_OUT_ADDR          equ (SHARED_VARIABLES + (6 * 4))               ; $FA4028
 AUDIO_OUT_AUTO          equ 0
 AUDIO_OUT_YM            equ 1
 
+; Who copies the cart framebuffer to the screen page, as the RP asks (a
+; word, read every VBL): the low byte is the mode, the high byte the chunks
+; of 48 bytes the blitter copies at a time (0: BLIT_PIECE_DEFAULT). Without
+; a blitter the CPU copies whatever the mode. Slot 7 of SHARED_VARIABLES.
+BLIT_MODE_ADDR          equ (SHARED_VARIABLES + (7 * 4))               ; $FA402C
+BLIT_MODE_AUTO          equ 0           ; the blitter on the DMA sound path, else the CPU
+BLIT_MODE_CPU           equ 1           ; the 68000's MOVEM loop
+BLIT_MODE_BLITTER       equ 2           ; the blitter, whatever the sound path
+BLIT_PIECE_DEFAULT      equ 40          ; about 1 ms: an IKBD byte waits less than its 1.28 ms
+
 ; Boot block. The RP can refuse to start the app (st_session_veto_boot()): a
 ; non-zero status makes pre_auto print the NUL-terminated message and return
 ; to GEM.
@@ -120,6 +131,7 @@ IKBD_OUT_WINDOW         equ (ROMCMD_START_ADDR + $8700)  ; + low byte of the IKB
 ST_HELLO_WINDOW         equ (ROMCMD_START_ADDR + $8800)  ; + the machine: hello, a new session
 ST_TOS_HI_WINDOW        equ (ROMCMD_START_ADDR + $8900)  ; + TOS version, high byte
 ST_TOS_LO_WINDOW        equ (ROMCMD_START_ADDR + $8A00)  ; + TOS version, low byte
-FB_SLACK_HI_WINDOW      equ (ROMCMD_START_ADDR + $8B00)  ; + when the blit ended, high byte (FB_SLACK_REPORT)
-FB_SLACK_LO_WINDOW      equ (ROMCMD_START_ADDR + $8C00)  ; + when the blit ended, low byte
+FB_SLACK_WINDOW         equ (ROMCMD_START_ADDR + $8B00)  ; + when the blit ended, Timer-A counts (FB_SLACK_REPORT)
 DMA_POS_WINDOW          equ (ROMCMD_START_ADDR + $8D00)  ; + where the DMA chip plays, / 8
+ST_FEATURES_WINDOW      equ (ROMCMD_START_ADDR + $8E00)  ; + ST_FEATURE_* bits, once per boot
+ST_FEATURE_BLITTER      equ 1

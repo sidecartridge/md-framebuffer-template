@@ -42,6 +42,10 @@ bool st_session_consume_boot(void);
 uint8_t st_session_machine(void);
 uint16_t st_session_tos_version(void);
 
+/* What the ST reported having after the last hello (CART_ST_FEATURE_*:
+ * a blitter); 0 until it has. */
+uint8_t st_session_features(void);
+
 /* The hellos seen since the RP started: a module that must start over with
  * each ST boot compares it with the count it last saw (audio.c). */
 uint32_t st_session_hellos(void);

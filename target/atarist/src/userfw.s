@@ -75,13 +75,15 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 FBDRV_DEBUG_MARKS     equ 0
 
 ; FB_SLACK_REPORT = 1 tells the RP, after every blit, how long after the VBL
-; the blit ended: Timer-B counts (1.63 us each) since userfw_vbl, as two
-; ROM3 reads (FB_SLACK_HI_WINDOW, FB_SLACK_LO_WINDOW), $FFFF when the next
-; VBL came first. Debug builds of the RP keep a histogram of the slack left
-; before the VBL (fb.c). The report itself costs about 30 us after each
-; blit: keep it 0 unless measuring. It counts Timer-B's interrupts: the YM
-; path only, not the DMA sound chip's.
+; the blit ended: MFP Timer-A, restarted by userfw_vbl and counting down
+; without an interrupt (/200: 81.4 us a count, 255 counts = 20.75 ms), read
+; after the blit and reported at FB_SLACK_WINDOW + counts elapsed, $FF when
+; the next VBL came first. Debug builds of the RP keep a histogram of the
+; slack left before the VBL (fb.c). About 10 us a VBL. Works on both sound
+; paths (Timer-A is free on both).
 FB_SLACK_REPORT       equ 0
+MFP_TADR              equ $FFFFFA1F          ; Timer-A data: the count while it runs
+TIMERA_SLACK_DIV200   equ 7                  ; Timer-A control: delay mode, /200
 
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
@@ -99,6 +101,8 @@ UFW_RESET_STUB        equ $00077F00          ; up to $77F7F
 UFW_MACHINE           equ $00077F80          ; word
 UFW_AUDIO_DMA         equ $00077F82          ; word
 UFW_DMA_FRONT         equ $00077F84          ; word: an offset in the ring
+; A blitter found at boot (XBIOS Blitmode): 1, else 0 (see BLIT_MODE_ADDR).
+UFW_HAS_BLITTER       equ $00077F86          ; word
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
@@ -120,9 +124,6 @@ UFW_IKBD_OUT_GEN      equ $00077FF6          ; word
 UFW_IKBD_OUT_STEP     equ $00077FF8          ; word
 ; IKBD bytes userfw_acia_irq has read; userfw_vbl reports its low byte.
 UFW_IKBD_COUNT        equ $00077FFA          ; word
-; Timer-B's count and the MFP's pending bits at the VBL (FB_SLACK_REPORT).
-UFW_SLACK_TBDR        equ $00077FFC          ; byte
-UFW_SLACK_IPRA        equ $00077FFD          ; byte
 ; The audio slice when the blit started: another one at its end means the
 ; next VBL came first (FB_SLACK_REPORT).
 UFW_SLACK_SLICE       equ $00077FFE          ; word
@@ -372,6 +373,43 @@ MW_MASK               equ $FFFF8924
 MW_MASK_ALL           equ $07FF              ; also the mask at rest: a transfer ended
 MW_WAIT_ITERS         equ 2000               ; a transfer takes 16 us
 
+; The blitter (a Mega ST fitted with one, an STE, a Mega STE): its
+; registers, from BLT_BASE ($FFFF8A20; halftone RAM below it is not used).
+; The copy is HOP 2 (source) and OP 3 (source): a plain word copy.
+;
+; The blitter copies in hog mode: it owns the bus for a piece of chunks,
+; the CPU and its interrupts wait. It needs 8 cycles a word against MOVEM's
+; 9, both bound by the bus: 1.4 ms less for the full screen (measured on a
+; Mega STE, where the DMA chip plays the sound: 3.3 ms left of the VBL
+; after the blit against 1.9 ms with MOVEM, the sound unchanged). Pieces
+; of BLIT_PIECE_DEFAULT chunks hold Timer-B's samples back and drop some
+; (the sound breaks), and pieces short enough for a sample every 179 us
+; (4 to 7 chunks) gained 0.2 to 0.8 ms on a Mega ST and still made the
+; sound audibly rougher. So the blitter copies by default only on the DMA
+; sound path, where Timer-B is off (BLIT_MODE_AUTO). Sharing the bus
+; instead of owning it took longer than a VBL with the audio: 25 frames a
+; second.
+BLT_BASE              equ $FFFF8A20
+BLT_SRC_X_INC         equ $FFFF8A20
+BLT_SRC_Y_INC         equ $FFFF8A22
+BLT_SRC_ADDR          equ $FFFF8A24
+BLT_ENDMASK1          equ $FFFF8A28
+BLT_ENDMASK2          equ $FFFF8A2A
+BLT_ENDMASK3          equ $FFFF8A2C
+BLT_DST_X_INC         equ $FFFF8A2E
+BLT_DST_Y_INC_REG     equ $FFFF8A30
+BLT_DST_ADDR          equ $FFFF8A32
+BLT_X_COUNT           equ $FFFF8A36
+BLT_Y_COUNT           equ $FFFF8A38
+BLT_HOP               equ $FFFF8A3A          ; word: HOP (high byte), OP (low byte)
+BLT_CTRL              equ $FFFF8A3C          ; bit 7 busy (start), bit 6 hog
+BLT_SKEW              equ $FFFF8A3D
+BLT_HOP_OP_COPY       equ $0203
+BLT_BUSY_HOG          equ $C0          ; control: start, and own the bus
+; From the last word of a chunk to the first of the chunk before it: the
+; predecrement MOVEM's order (see FBDRV_INLINE).
+BLT_DST_Y_INC         equ -(FBDRV_ITER_BYTES + FBDRV_ITER_BYTES - 2)
+
 ; IRQ vector slots we take over. $70 (VBL) already handled by the
 ; original userfw code path (D3 holds the save).
 VEC_HBL               equ $68
@@ -498,6 +536,21 @@ userfw:
     trap    #14
     addq.l  #2, sp
     move.l  d0, UFW_PHYSBASE_SAVE    ; saved screen base lives in RAM now
+
+    ; A blitter? XBIOS Blitmode(-1): bit 1 set when there is one (an STE,
+    ; a Mega STE, a Mega ST fitted with one). Told to the RP once.
+    move.w  #-1, -(sp)
+    move.w  #64, -(sp)                ; XBIOS Blitmode
+    trap    #14
+    addq.l  #4, sp
+    moveq   #0, d1
+    btst    #1, d0
+    beq.s   .no_blitter
+    moveq   #ST_FEATURE_BLITTER, d1
+.no_blitter:
+    move.w  d1, UFW_HAS_BLITTER
+    lea     ST_FEATURES_WINDOW, a0
+    tst.b   (a0, d1.w)
 
     ; Save TOS's VBL vector and install ours. We're in supervisor mode
     ; (entered via CA_INIT) so writing $70.w is legal.
@@ -829,18 +882,87 @@ userfw:
     move.w  UFW_AUDIO_SLICE, UFW_SLACK_SLICE
     endc
 
+    ; The copy: the blitter when there is one and the RP asks for it, or
+    ; leaves it to us on the DMA sound path (BLIT_MODE_ADDR), else
+    ; FBDRV_INLINE. The blitter reads the cart framebuffer as MOVEM does, a
+    ; chunk of FBDRV_ITER_BYTES per line going forward, and writes each
+    ; chunk where MOVEM's predecrement store would: one line per chunk,
+    ; from the page's last chunk back to its first (BLT_DST_Y_INC), then
+    ; the tail in natural order. Either way A5 ends at the page start, as
+    ; .after_copy expects.
+    movea.l UFW_SCREEN_PAGE, a5
+    tst.w   UFW_HAS_BLITTER
+    beq     .copy_cpu
+    move.w  BLIT_MODE_ADDR, d1
+    cmp.b   #BLIT_MODE_BLITTER, d1
+    beq.s   .copy_blitter
+    tst.b   d1
+    bne     .copy_cpu
+    tst.w   UFW_AUDIO_DMA
+    beq     .copy_cpu
+.copy_blitter:
+    lea     BLT_BASE.w, a1
+    move.w  #2, BLT_SRC_X_INC-BLT_BASE(a1)
+    move.w  #2, BLT_SRC_Y_INC-BLT_BASE(a1)
+    move.l  #FRAMEBUFFER_ADDR, BLT_SRC_ADDR-BLT_BASE(a1)
+    moveq   #-1, d2
+    move.w  d2, BLT_ENDMASK1-BLT_BASE(a1)
+    move.w  d2, BLT_ENDMASK2-BLT_BASE(a1)
+    move.w  d2, BLT_ENDMASK3-BLT_BASE(a1)
+    move.w  #2, BLT_DST_X_INC-BLT_BASE(a1)
+    move.w  #BLT_DST_Y_INC, BLT_DST_Y_INC_REG-BLT_BASE(a1)
+    lea     (FBDRV_MAIN_BYTES - FBDRV_ITER_BYTES)(a5), a2
+    move.l  a2, BLT_DST_ADDR-BLT_BASE(a1)
+    move.w  #FBDRV_ITER_BYTES / 2, BLT_X_COUNT-BLT_BASE(a1)
+    move.w  #BLT_HOP_OP_COPY, BLT_HOP-BLT_BASE(a1)
+    clr.b   BLT_SKEW-BLT_BASE(a1)
+    ifne    FBDRV_DEBUG_MARKS
+    move.w  #BLIT_MARK_RUNNING, PALETTE_IDX0.w
+    endc
+
+    ; A piece of chunks at a time, in hog mode (see BLT_BASE); between
+    ; pieces the interrupts run.
+    lsr.w   #8, d1
+    bne.s   .blit_pieces
+    moveq   #BLIT_PIECE_DEFAULT, d1
+.blit_pieces:
+    move.w  #FBDRV_MAIN_ITERS, d2
+.blit_hog:
+    move.w  d1, d3
+    cmp.w   d2, d3
+    bls.s   .blit_hog_piece
+    move.w  d2, d3
+.blit_hog_piece:
+    move.w  d3, BLT_Y_COUNT-BLT_BASE(a1)
+    move.b  #BLT_BUSY_HOG, BLT_CTRL-BLT_BASE(a1)
+    nop
+    sub.w   d3, d2
+    bne.s   .blit_hog
+
+    ifne    FBDRV_TAIL_BYTES
+    lea     FBDRV_TAIL_DISP(a5), a2
+    move.l  a2, BLT_DST_ADDR-BLT_BASE(a1)
+    move.w  #FBDRV_TAIL_BYTES / 2, BLT_X_COUNT-BLT_BASE(a1)
+    move.w  #1, BLT_Y_COUNT-BLT_BASE(a1)
+    move.b  #BLT_BUSY_HOG, BLT_CTRL-BLT_BASE(a1)
+    nop
+    endc
+    ifne    FBDRV_DEBUG_MARKS
+    move.w  #BLIT_MARK_DONE, PALETTE_IDX0.w
+    endc
+    bra     .after_copy
+
     ; A5 = END of the screen page chunk-covered region. FBDRV_INLINE
     ; uses predec MOVEM (`movem.l list, -(a5)`) and walks A5 backwards
     ; from page_end down to page_start as it stores chunks in reverse
     ; order. After FBDRV_MAIN_ITERS iters A5 ends at the page START,
     ; which is the value .after_copy below expects in A5.
-    movea.l UFW_SCREEN_PAGE, a5
+.copy_cpu:
     lea     (FBDRV_MAIN_ITERS * FBDRV_ITER_BYTES)(a5), a5
 
-    ; Pure 68000 CPU copy via the FBDRV_INLINE macro (defined in
-    ; the constants block). Same code path on plain ST / STE /
-    ; MegaSTE / TT / Falcon -- no _MCH cookie dispatch, no STE
-    ; blitter.
+    ; The 68000's copy via the FBDRV_INLINE macro (defined in the
+    ; constants block): every machine without a blitter, and those with
+    ; one on the YM sound path or when the RP asks for it.
     ;
     ; FBDRV_INLINE clobbers D0-D7, A1-A4, A6. A0 and A7 (SP) are
     ; PRESERVED (not in the MOVEM list): A0 holds the Timer-B
@@ -884,43 +1006,20 @@ userfw:
     tst.b   VBLSYNC_ADDR
 
     ifne    FB_SLACK_REPORT
-    ; How long after the VBL the blit ended (see FB_SLACK_REPORT). Timer-B
-    ; fires served since the VBL: A0's offset in its slice, 2 bytes each.
-    ; counts = TBDR at the VBL - TBDR now + TIMERB_COUNT * fires, where a
-    ; fire pending at the VBL is not one of them and one pending now is.
-    move.w  #$2700, sr
-    move.w  a0, d0
-    moveq   #0, d1
-    move.b  MFP_TBDR.w, d1
-    move.b  MFP_IPRA.w, d2
-    move.w  UFW_AUDIO_SLICE, d3
-    move.w  #$2300, sr
-    move.w  #$FFFF, d4
-    cmp.w   UFW_SLACK_SLICE, d3           ; another slice: the next VBL came
-    bne.s   .slack_report
-    and.w   #$FF, d0
-    lsr.w   #1, d0
-    btst    #0, d2
-    beq.s   .slack_now
-    addq.w  #1, d0
-.slack_now:
-    btst    #0, UFW_SLACK_IPRA
-    beq.s   .slack_vbl
-    subq.w  #1, d0
-.slack_vbl:
-    mulu    #TIMERB_COUNT, d0
-    moveq   #0, d4
-    move.b  UFW_SLACK_TBDR, d4
-    add.w   d0, d4
-    sub.w   d1, d4
+    ; How long after the VBL the blit ended (see FB_SLACK_REPORT): Timer-A's
+    ; counts since userfw_vbl restarted it; $FF when the next VBL came first
+    ; (another audio slice than when the blit started).
+    moveq   #0, d0
+    move.b  MFP_TADR.w, d0
+    move.w  #255, d1
+    sub.w   d0, d1
+    move.w  UFW_AUDIO_SLICE, d2
+    cmp.w   UFW_SLACK_SLICE, d2
+    beq.s   .slack_report
+    move.w  #255, d1
 .slack_report:
-    move.w  d4, d0
-    lsr.w   #8, d0
-    lea     FB_SLACK_HI_WINDOW, a1
-    tst.b   (a1, d0.w)
-    and.w   #$FF, d4
-    lea     FB_SLACK_LO_WINDOW, a1
-    tst.b   (a1, d4.w)
+    lea     FB_SLACK_WINDOW, a1
+    tst.b   (a1, d1.w)
     endc
 
 .input_check:
@@ -1087,8 +1186,9 @@ userfw_vbl:
     ; so every byte it counted was forwarded before the report.
     move.w  #$2700, sr
     ifne    FB_SLACK_REPORT
-    move.b  MFP_IPRA.w, UFW_SLACK_IPRA
-    move.b  MFP_TBDR.w, UFW_SLACK_TBDR
+    clr.b   MFP_TACR.w                    ; Timer-A from 255 again (see FB_SLACK_REPORT)
+    move.b  #255, MFP_TADR.w
+    move.b  #TIMERA_SLACK_DIV200, MFP_TACR.w
     endc
     move.l  d0, -(sp)
     moveq   #0, d0

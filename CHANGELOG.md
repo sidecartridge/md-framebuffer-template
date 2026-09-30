@@ -27,6 +27,17 @@
 - The audio buffer in the cartridge window grows to 2 KB: `APP_FREE` starts at `$FA4980`
   (about 14.4 KB).
 
+### Blitter
+
+- On an STE or a Mega STE the blitter copies each frame to the screen instead of the 68000,
+  which gives the ST about 1.4 ms of every frame back (measured on a Mega STE). Where the YM plays the sound (a plain
+  ST, a Mega ST fitted with a blitter) the 68000 still copies: the blitter holds the CPU off,
+  and the YM's samples come late and sound rough. `fb_set_copy_mode()` picks either; the
+  blitter on a Mega ST gives an app without sound about 3 ms more.
+- `FB_SLACK_REPORT` now measures with MFP Timer-A, on both sound paths, and reports one byte
+  (`$FB8Bxx`, in 81 µs steps). The ST reports whether it has a blitter
+  (`st_session_features()`).
+
 ### Mouse and joysticks
 
 - Apps get the mouse and both joysticks next to the keyboard, decoded on the RP: pick an

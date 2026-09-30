@@ -163,6 +163,12 @@ PAIRS = [
      lambda rp: rp["CART_AUDIO_OUT_OFFSET"]),
     ("audio output: auto", lambda st: st["AUDIO_OUT_AUTO"], lambda rp: rp["CART_AUDIO_OUT_AUTO"]),
     ("audio output: YM", lambda st: st["AUDIO_OUT_YM"], lambda rp: rp["CART_AUDIO_OUT_YM"]),
+    ("copy mode word", lambda st: window(st, "BLIT_MODE_ADDR"),
+     lambda rp: rp["CART_BLIT_MODE_OFFSET"]),
+    ("copy mode: auto", lambda st: st["BLIT_MODE_AUTO"], lambda rp: rp["CART_BLIT_MODE_AUTO"]),
+    ("copy mode: CPU", lambda st: st["BLIT_MODE_CPU"], lambda rp: rp["CART_BLIT_MODE_CPU"]),
+    ("copy mode: blitter", lambda st: st["BLIT_MODE_BLITTER"],
+     lambda rp: rp["CART_BLIT_MODE_BLITTER"]),
     # The boot block the ST reads in pre_auto.
     ("boot status", lambda st: window(st, "BOOT_STATUS_ADDR"),
      lambda rp: rp["CART_BOOT_STATUS_OFFSET"]),
@@ -205,12 +211,18 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_TOS_HI_WINDOW"]),
     ("TOS low byte window", lambda st: rom3(st, "ST_TOS_LO_WINDOW"),
      lambda rp: rp["CART_ROM3_TOS_LO_WINDOW"]),
-    ("blit slack high byte window", lambda st: rom3(st, "FB_SLACK_HI_WINDOW"),
-     lambda rp: rp["CART_ROM3_FB_SLACK_HI_WINDOW"]),
-    ("blit slack low byte window", lambda st: rom3(st, "FB_SLACK_LO_WINDOW"),
-     lambda rp: rp["CART_ROM3_FB_SLACK_LO_WINDOW"]),
+    ("blit slack window", lambda st: rom3(st, "FB_SLACK_WINDOW"),
+     lambda rp: rp["CART_ROM3_FB_SLACK_WINDOW"]),
     ("DMA position window", lambda st: rom3(st, "DMA_POS_WINDOW"),
      lambda rp: rp["CART_ROM3_DMA_POS_WINDOW"]),
+    ("ST features window", lambda st: rom3(st, "ST_FEATURES_WINDOW"),
+     lambda rp: rp["CART_ROM3_ST_FEATURES_WINDOW"]),
+    ("ST feature: blitter", lambda st: st["ST_FEATURE_BLITTER"],
+     lambda rp: rp["CART_ST_FEATURE_BLITTER"]),
+    # The blit slack: Timer-A's count, in nanoseconds (fb.c converts).
+    ("Timer-A slack count (ns)", lambda st: round(
+        MFP_PRESCALER[st["TIMERA_SLACK_DIV200"]] * 1e9 / MFP_CLOCK_HZ, -1),
+     lambda rp: rp["FB_TIMERA_COUNT_NS"]),
     # The sample rate: Timer-B plays what the RP converts at its rate.
     ("audio sample rate (Hz)", lambda st: round(
         MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),

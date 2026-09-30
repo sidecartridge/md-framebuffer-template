@@ -85,6 +85,18 @@
 #define CART_AUDIO_OUT_AUTO              0u
 #define CART_AUDIO_OUT_YM                1u
 
+/* Who copies the cart framebuffer to the ST's screen page, as the RP asks
+ * (fb_set_copy_mode()): a word in slot 7 of SHARED_VARIABLES, read every
+ * VBL. The low byte is the mode, the high byte the chunks of 48 bytes the
+ * blitter copies at a time (0: the ST's default). CART_BLIT_MODE_AUTO (0,
+ * what the window's erase leaves) takes the blitter on the DMA sound path
+ * and the CPU elsewhere. Without a blitter the CPU copies. */
+#define CART_BLIT_MODE_OFFSET                                                 \
+  (CART_SHARED_VARIABLES_OFFSET + (7 * 4))       /* $402C */
+#define CART_BLIT_MODE_AUTO              0u
+#define CART_BLIT_MODE_CPU               1u
+#define CART_BLIT_MODE_BLITTER           2u
+
 /* 16-entry ST palette published by the RP, applied by the m68k VBL
  * handler to $FFFF8240..$FFFF825E each frame. Format: 16 contiguous
  * 16-bit words. Each word is the standard ST 9-bit palette format
@@ -240,10 +252,10 @@
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
  *   $FB8Axx  TOS version, low byte; sent just before the hello
- *   $FB8Bxx  when the blit ended, in Timer-B counts after the VBL, high byte
- *            ($FFFF: after the next VBL); userfw.s FB_SLACK_REPORT (fb.c)
- *   $FB8Cxx  the same, low byte; sent just after the high byte
- *   $FB8Dxx  VBL: the DMA sound chip plays byte xx * 8 of its ring (audio.c) */
+ *   $FB8Bxx  when the blit ended, in Timer-A counts after the VBL ($FF:
+ *            after the next VBL); userfw.s FB_SLACK_REPORT (fb.c)
+ *   $FB8Dxx  VBL: the DMA sound chip plays byte xx * 8 of its ring (audio.c)
+ *   $FB8Exx  the ST's features (CART_ST_FEATURE_*), after the hello */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
 #define CART_ROM3_IKBD_COUNT_WINDOW  0x8300u
 #define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
@@ -253,9 +265,10 @@
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u
-#define CART_ROM3_FB_SLACK_HI_WINDOW 0x8B00u
-#define CART_ROM3_FB_SLACK_LO_WINDOW 0x8C00u
+#define CART_ROM3_FB_SLACK_WINDOW    0x8B00u
 #define CART_ROM3_DMA_POS_WINDOW     0x8D00u
+#define CART_ROM3_ST_FEATURES_WINDOW 0x8E00u
+#define CART_ST_FEATURE_BLITTER      0x01u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.
