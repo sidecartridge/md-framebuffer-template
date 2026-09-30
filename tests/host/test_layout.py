@@ -156,6 +156,13 @@ PAIRS = [
     ("audio slices", lambda st: st["AUDIO_SLICES"], lambda rp: rp["CART_AUDIO_SLICES"]),
     ("audio slice size", lambda st: st["AUDIO_SLICE_BYTES"],
      lambda rp: rp["CART_AUDIO_SLICE_BYTES"]),
+    ("DMA ring", lambda st: st["AUDIO_DMA_RING_BYTES"],
+     lambda rp: rp["CART_AUDIO_DMA_RING_BYTES"]),
+    ("DMA lead", lambda st: st["AUDIO_DMA_LEAD"], lambda rp: rp["CART_AUDIO_DMA_LEAD"]),
+    ("audio output word", lambda st: window(st, "AUDIO_OUT_ADDR"),
+     lambda rp: rp["CART_AUDIO_OUT_OFFSET"]),
+    ("audio output: auto", lambda st: st["AUDIO_OUT_AUTO"], lambda rp: rp["CART_AUDIO_OUT_AUTO"]),
+    ("audio output: YM", lambda st: st["AUDIO_OUT_YM"], lambda rp: rp["CART_AUDIO_OUT_YM"]),
     # The boot block the ST reads in pre_auto.
     ("boot status", lambda st: window(st, "BOOT_STATUS_ADDR"),
      lambda rp: rp["CART_BOOT_STATUS_OFFSET"]),
@@ -202,6 +209,8 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_FB_SLACK_HI_WINDOW"]),
     ("blit slack low byte window", lambda st: rom3(st, "FB_SLACK_LO_WINDOW"),
      lambda rp: rp["CART_ROM3_FB_SLACK_LO_WINDOW"]),
+    ("DMA position window", lambda st: rom3(st, "DMA_POS_WINDOW"),
+     lambda rp: rp["CART_ROM3_DMA_POS_WINDOW"]),
     # The sample rate: Timer-B plays what the RP converts at its rate.
     ("audio sample rate (Hz)", lambda st: round(
         MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
@@ -233,15 +242,29 @@ class Layout(unittest.TestCase):
         self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_BUFFER_SIZE"])
 
     def test_audio_slices(self):
-        """The slices fill the audio buffer, a VBL of samples fits in one,
+        """The slices fit in the audio buffer, a VBL of samples fits in one,
         and the ST's shift is the slice size."""
         st, rp = st_names(), rp_names()
-        self.assertEqual(rp["CART_AUDIO_SLICES"] * rp["CART_AUDIO_SLICE_BYTES"],
-                         rp["CART_AUDIO_BUFFER_SIZE"])
+        self.assertLessEqual(rp["CART_AUDIO_SLICES"] * rp["CART_AUDIO_SLICE_BYTES"],
+                             rp["CART_AUDIO_BUFFER_SIZE"])
         self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_SLICE_BYTES"])
         self.assertEqual(1 << st["AUDIO_SLICE_SHIFT"], st["AUDIO_SLICE_BYTES"])
         slices = rp["CART_AUDIO_SLICES"]
         self.assertEqual(slices & (slices - 1), 0, "the ST masks the slice number")
+
+    def test_dma_ring(self):
+        """The DMA ring masks as a power of two, the lead and the ST's copies
+        go by 8 bytes and stay under half a ring, and the rate the ST sets is
+        the one the RP converts to."""
+        st, rp = st_names(), rp_names()
+        ring, lead = rp["CART_AUDIO_DMA_RING_BYTES"], rp["CART_AUDIO_DMA_LEAD"]
+        self.assertEqual(ring & (ring - 1), 0)
+        self.assertEqual(lead % 8, 0)
+        self.assertLess(lead, ring // 2)
+        self.assertEqual(st["UFW_DMA_RING"] % ring, 0, "the ST masks ring offsets")
+        rates = [6258, 12517, 25033, 50066]
+        self.assertEqual(rates[st["DMA_MODE_PLAY"] & 3], rp["CART_AUDIO_DMA_RATE_HZ"])
+        self.assertTrue(st["DMA_MODE_PLAY"] & 0x80, "mono")
 
     def test_rom3_windows_distinct(self):
         """Every ROM3 signalling window has a high byte of its own."""

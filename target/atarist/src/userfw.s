@@ -79,7 +79,8 @@ FBDRV_DEBUG_MARKS     equ 0
 ; ROM3 reads (FB_SLACK_HI_WINDOW, FB_SLACK_LO_WINDOW), $FFFF when the next
 ; VBL came first. Debug builds of the RP keep a histogram of the slack left
 ; before the VBL (fb.c). The report itself costs about 30 us after each
-; blit: keep it 0 unless measuring.
+; blit: keep it 0 unless measuring. It counts Timer-B's interrupts: the YM
+; path only, not the DMA sound chip's.
 FB_SLACK_REPORT       equ 0
 
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
@@ -91,7 +92,13 @@ FB_SLACK_REPORT       equ 0
 ; screen page, allocation is 32 KB).
 ; UFW_RESET_STUB: .cold_reset copies userfw_reset_stub here and runs it,
 ; so the ST's last instructions before its cold reset come from RAM.
-UFW_RESET_STUB        equ $00077F00          ; up to $77FDF
+UFW_RESET_STUB        equ $00077F00          ; up to $77F7F
+; The machine from the hello (family in bits 7..4), whether the DMA sound
+; chip plays (-1) or Timer-B and the YM (0), and where the last copy into
+; the DMA ring ended (see AUDIO_BUFFER_ADDR, UFW_DMA_RING).
+UFW_MACHINE           equ $00077F80          ; word
+UFW_AUDIO_DMA         equ $00077F82          ; word
+UFW_DMA_FRONT         equ $00077F84          ; word: an offset in the ring
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
@@ -341,6 +348,30 @@ MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit coun
 TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
 TIMERB_COUNT          equ 110                ; ~5,585 Hz (~112 samples/PAL VBL)
 
+; STE / Mega STE DMA sound. The chip plays 8-bit samples from ST RAM only,
+; so userfw keeps a ring of AUDIO_DMA_RING_BYTES there, the second use of
+; Atari RAM after the screen pages and on the same assumption: the 2 KB just
+; below screen page A. The chip loops over it at 12,517 Hz mono; every VBL
+; userfw copies into it, from the audio buffer that mirrors it, what the RP
+; has written ahead of the chip (see AUDIO_BUFFER_ADDR).
+DMA_SND_CTRL          equ $FFFF8901          ; bit 0 play, bit 1 loop
+DMA_SND_START         equ $FFFF8903          ; frame start: high, mid (+2), low (+4)
+DMA_SND_COUNT_MID     equ $FFFF890B          ; where it plays (read only): middle byte
+DMA_SND_COUNT_LOW     equ $FFFF890D          ;   and low byte
+DMA_SND_END           equ $FFFF890F          ; frame end: high, mid (+2), low (+4)
+DMA_SND_MODE          equ $FFFF8921          ; bits 1-0 rate, bit 7 mono
+DMA_MODE_PLAY         equ $81                ; mono, 12,517 Hz
+DMA_CTRL_LOOP_PLAY    equ 3
+UFW_DMA_RING          equ $0006F800          ; AUDIO_DMA_RING_BYTES, up to $6FFFF
+MACHINE_FAMILY_STE    equ $1                 ; the hello byte's family: STE, Mega STE
+; The LMC1992 behind the Microwire: the DMA sound goes through it. userfw
+; sets what TOS sets at boot, in case something changed it: master, left
+; and right at 0 dB, bass and treble flat, the YM mixed in (GEM's bell).
+MW_DATA               equ $FFFF8922
+MW_MASK               equ $FFFF8924
+MW_MASK_ALL           equ $07FF              ; also the mask at rest: a transfer ended
+MW_WAIT_ITERS         equ 2000               ; a transfer takes 16 us
+
 ; IRQ vector slots we take over. $70 (VBL) already handled by the
 ; original userfw code path (D3 holds the save).
 VEC_HBL               equ $68
@@ -460,6 +491,7 @@ userfw:
 .hello_send:
     lea     ST_HELLO_WINDOW, a0
     tst.b   (a0, d0.w)
+    move.w  d0, UFW_MACHINE
 
     ; Save the original screen base so we can restore it on ESC exit.
     move.w  #2, -(sp)                ; XBIOS Physbase
@@ -601,8 +633,9 @@ userfw:
 
     ; --- Timer-B setup (audio @ ~5,585 Hz) -----------------------
     ; Install our handler at $120 (overrides the dummy installed
-    ; above). Load count -> TBDR, then prescaler -> TBCR starts
-    ; the countdown. Enable + unmask Timer-B at the MFP. SR is
+    ; above). On the YM path (.sound_ym below) count -> TBDR, then
+    ; prescaler -> TBCR starts the countdown, and Timer-B is enabled and
+    ; unmasked at the MFP; the DMA path leaves it stopped. SR is
     ; still IPL=7 at this point (set by `ori.w #$0700, sr` at the
     ; very top of userfw), so no IRQ fires until SR is dropped to
     ; $2300 below.
@@ -617,8 +650,6 @@ userfw:
     move.b  28(a5), d0                    ; copy TOS's VR (saved above)
     andi.b  #$F7, d0                      ; clear bit 3 (S) -> auto-EOI
     move.b  d0, MFP_VR.w
-    move.b  #TIMERB_COUNT, MFP_TBDR.w
-    move.b  #TIMERB_PRESCALER, MFP_TBCR.w
 
     ; Initialise A0 to the first audio slice for the Timer-B handler.
     ; A0 is NOT in the FBDRV_INLINE MOVEM list and no other code in
@@ -629,8 +660,61 @@ userfw:
     clr.w   UFW_AUDIO_SLICE
     movea.l #AUDIO_BUFFER_ADDR, a0
 
+    ; The sound goes out through the DMA chip on an STE or a Mega STE,
+    ; unless the RP keeps us to the YM (AUDIO_OUT_ADDR); through Timer-B and
+    ; the YM elsewhere. The RP applies the same rule to what it writes.
+    clr.w   UFW_AUDIO_DMA
+    cmpi.w  #AUDIO_OUT_YM, AUDIO_OUT_ADDR
+    beq     .sound_ym
+    move.w  UFW_MACHINE, d0
+    lsr.w   #4, d0
+    cmpi.w  #MACHINE_FAMILY_STE, d0
+    bne     .sound_ym
+
+    ; DMA: stopped while it is set up; the ring silent (signed 0); the
+    ; frame is the whole ring, looped; the mixer as TOS sets it; play.
+    clr.b   DMA_SND_CTRL.w
+    lea     UFW_DMA_RING, a1
+    move.w  #(AUDIO_DMA_RING_BYTES / 4) - 1, d0
+.dma_clear:
+    clr.l   (a1)+
+    dbf     d0, .dma_clear
+    move.l  #UFW_DMA_RING, d0
+    move.b  d0, DMA_SND_START+4.w
+    lsr.l   #8, d0
+    move.b  d0, DMA_SND_START+2.w
+    lsr.l   #8, d0
+    move.b  d0, DMA_SND_START.w
+    move.l  #(UFW_DMA_RING + AUDIO_DMA_RING_BYTES), d0
+    move.b  d0, DMA_SND_END+4.w
+    lsr.l   #8, d0
+    move.b  d0, DMA_SND_END+2.w
+    lsr.l   #8, d0
+    move.b  d0, DMA_SND_END.w
+    move.b  #DMA_MODE_PLAY, DMA_SND_MODE.w
+    lea     userfw_mw_cmds(pc), a1
+    moveq   #((userfw_mw_cmds_end - userfw_mw_cmds) / 2) - 1, d1
+.mw_next:
+    move.w  #MW_WAIT_ITERS, d2
+.mw_wait:
+    cmpi.w  #MW_MASK_ALL, MW_MASK.w       ; the last transfer is over
+    beq.s   .mw_send
+    dbf     d2, .mw_wait
+.mw_send:
+    move.w  #MW_MASK_ALL, MW_MASK.w
+    move.w  (a1)+, MW_DATA.w
+    dbf     d1, .mw_next
+    clr.w   UFW_DMA_FRONT
+    move.b  #DMA_CTRL_LOOP_PLAY, DMA_SND_CTRL.w
+    move.w  #-1, UFW_AUDIO_DMA
+    bra.s   .sound_done
+
+.sound_ym:
+    move.b  #TIMERB_COUNT, MFP_TBDR.w
+    move.b  #TIMERB_PRESCALER, MFP_TBCR.w
     bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
     bset    #0, MFP_IMRA.w                ; Timer-B IRQ unmask (IMRA bit 0)
+.sound_done:
 
     ; Interrupts back on (caller's level, typically $2300).
     move.w  (sp)+, sr
@@ -674,6 +758,55 @@ userfw:
     ifne    FBDRV_DEBUG_MARKS
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
     endc
+
+    ; DMA sound (see AUDIO_BUFFER_ADDR): where the chip plays now, by
+    ; 8 bytes, for the RP; then the mirror copied into the ring from where
+    ; the last copy ended up to AUDIO_DMA_LEAD bytes ahead of the chip. The
+    ; counter moves while it is read: its middle byte is read again. A
+    ; frontier out of step (the first VBL, a long stall) copies the lead.
+    ; About 0.35 ms at 8 MHz; Timer-B, off on this path, took 1.6 ms.
+    tst.w   UFW_AUDIO_DMA
+    beq     .dma_done
+.dma_pos:
+    moveq   #0, d0
+    move.b  DMA_SND_COUNT_MID.w, d0
+    move.b  DMA_SND_COUNT_LOW.w, d1
+    cmp.b   DMA_SND_COUNT_MID.w, d0
+    bne.s   .dma_pos
+    lsl.w   #8, d0
+    move.b  d1, d0
+    sub.w   #(UFW_DMA_RING & $FFFF), d0
+    and.w   #(AUDIO_DMA_RING_BYTES - 8), d0
+    move.w  d0, d1
+    lsr.w   #3, d1
+    lea     DMA_POS_WINDOW, a1
+    tst.b   (a1, d1.w)
+    add.w   #AUDIO_DMA_LEAD, d0
+    and.w   #(AUDIO_DMA_RING_BYTES - 1), d0 ; copy up to here
+    move.w  UFW_DMA_FRONT, d1             ; from where the last copy ended
+    move.w  d0, UFW_DMA_FRONT
+    move.w  d0, d2
+    sub.w   d1, d2
+    and.w   #(AUDIO_DMA_RING_BYTES - 1), d2
+    cmp.w   #(AUDIO_DMA_RING_BYTES / 2), d2
+    bls.s   .dma_count
+    move.w  d0, d1
+    sub.w   #AUDIO_DMA_LEAD, d1
+    and.w   #(AUDIO_DMA_RING_BYTES - 1), d1
+    move.w  #AUDIO_DMA_LEAD, d2
+.dma_count:
+    lsr.w   #3, d2
+    subq.w  #1, d2
+    bmi.s   .dma_done
+    lea     AUDIO_BUFFER_ADDR, a2
+    lea     UFW_DMA_RING, a3
+.dma_copy:
+    move.l  0(a2, d1.w), 0(a3, d1.w)
+    move.l  4(a2, d1.w), 4(a3, d1.w)
+    addq.w  #8, d1
+    and.w   #(AUDIO_DMA_RING_BYTES - 1), d1
+    dbf     d2, .dma_copy
+.dma_done:
 
     ; Publish RP-supplied palette to the shifter. 16 words
     ; from PALETTE_ADDR -> $FFFF8240..$FFFF825E via two MOVEMs.
@@ -848,6 +981,12 @@ userfw:
     ; Mask interrupts before touching MFP / vectors.
     ori.w   #$0700, sr
 
+    ; The DMA sound chip stops; the Microwire stays as TOS sets it.
+    tst.w   UFW_AUDIO_DMA
+    beq.s   .exit_sound
+    clr.b   DMA_SND_CTRL.w
+.exit_sound:
+
     ; Recompute the save-area pointer from UFW_PHYSBASE_SAVE in
     ; case anything clobbered A5 during the run.
     movea.l UFW_PHYSBASE_SAVE, a5
@@ -904,6 +1043,10 @@ userfw:
     ; and every vector userfw took, so nothing is restored by hand.
 .cold_reset:
     move.w  #$2700, sr
+    tst.w   UFW_AUDIO_DMA
+    beq.s   .reset_sound
+    clr.b   DMA_SND_CTRL.w                ; nothing plays from a ring TOS reuses
+.reset_sound:
     lea     userfw_reset_stub(pc), a1
     lea     UFW_RESET_STUB, a2
     moveq   #((userfw_reset_stub_end - userfw_reset_stub) / 2) - 1, d0
@@ -1057,6 +1200,17 @@ userfw_reset_stub:
     movea.l $4.w, a0
     jmp     (a0)
 userfw_reset_stub_end:
+
+; The Microwire commands userfw sends on the DMA path (see MW_DATA):
+; %10 then a 3-bit command and its value.
+userfw_mw_cmds:
+    dc.w    $04E8                         ; master volume 0 dB
+    dc.w    $0554                         ; left 0 dB
+    dc.w    $0514                         ; right 0 dB
+    dc.w    $0486                         ; treble flat
+    dc.w    $0446                         ; bass flat
+    dc.w    $0401                         ; mix: the YM with the DMA sound
+userfw_mw_cmds_end:
 
 ; The NOP tail. This module is the last in the cartridge image, and
 ; firmware.py strips trailing zero bytes from it: the last word must be

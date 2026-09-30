@@ -44,12 +44,13 @@
  *                                        previous iteration)
  *   $FA4010  SHARED_VARIABLES    240 B  (60 indexed 4-byte slots,
  *                                        app-free, but for slots 2..5:
- *                                        commands for the IKBD, and
- *                                        slots 12..19: the palette).
- *   $FA4100  AUDIO_BUFFER       1024 B (YM volume pairs)
- *   $FA4500  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
- *   $FA4502  BOOT_MESSAGE     126 B  (why the RP refused to start)
- *   $FA4580  APP_FREE          ~15.4 KB free arena, ends at FRAMEBUFFER
+ *                                        commands for the IKBD, slot 6:
+ *                                        the audio output, and slots
+ *                                        12..19: the palette).
+ *   $FA4100  AUDIO_BUFFER       2048 B (YM volume pairs, or DMA samples)
+ *   $FA4900  BOOT_STATUS        2 B  (read once by pre_auto: 0 = start)
+ *   $FA4902  BOOT_MESSAGE     126 B  (why the RP refused to start)
+ *   $FA4980  APP_FREE          ~14.4 KB free arena, ends at FRAMEBUFFER
  *   $FA8300  FRAMEBUFFER          32 KB (320x200 4 bpp low-res)
  *   $FAFFFF  end of region
  */
@@ -75,6 +76,15 @@
 #define CART_IKBD_OUT_MAX                (CART_IKBD_OUT_SIZE - 4)
 #define CART_IKBD_OUT_BUSY               0x8000u
 
+/* Which way the ST plays the sound, as the RP asks: a word in slot 6 of
+ * SHARED_VARIABLES, read once per ST boot. CART_AUDIO_OUT_AUTO (0, what
+ * the window's erase leaves) takes the DMA sound chip on an STE or a Mega
+ * STE and the YM elsewhere; CART_AUDIO_OUT_YM keeps to the YM (audio.c). */
+#define CART_AUDIO_OUT_OFFSET                                                 \
+  (CART_SHARED_VARIABLES_OFFSET + (6 * 4))       /* $4028 */
+#define CART_AUDIO_OUT_AUTO              0u
+#define CART_AUDIO_OUT_YM                1u
+
 /* 16-entry ST palette published by the RP, applied by the m68k VBL
  * handler to $FFFF8240..$FFFF825E each frame. Format: 16 contiguous
  * 16-bit words. Each word is the standard ST 9-bit palette format
@@ -92,14 +102,25 @@
 #define CART_PALETTE_ENTRIES             16
 #define CART_PALETTE_SIZE                (CART_PALETTE_ENTRIES * 2)  /* 32 B */
 
-/* Audio sample buffer: (vA, vB) YM2149 volume pairs, two bytes per
- * sample for channels A and B. The m68k Timer-B IRQ handler fires at
- * ~5,585 Hz and reads one pair per fire; its VBL handler points the read
- * cursor at the start of the next slice every VBL (below), so a frame reads
- * the first ~224 bytes of one slice. */
+/* Audio sample buffer, used one of two ways (audio.c):
+ *   - the YM: (vA, vB) YM2149 volume pairs, two bytes per sample for
+ *     channels A and B. The m68k Timer-B IRQ handler fires at ~5,585 Hz and
+ *     reads one pair per fire; its VBL handler points the read cursor at the
+ *     start of the next slice every VBL (below), so a frame reads the first
+ *     ~224 bytes of one slice;
+ *   - the DMA sound chip of an STE or a Mega STE: the whole buffer mirrors
+ *     the ring of 8-bit signed samples the chip plays from ST RAM at
+ *     12,517 Hz. Every VBL the ST reports where the chip plays
+ *     (CART_ROM3_DMA_POS_WINDOW) and copies the mirror up to
+ *     CART_AUDIO_DMA_LEAD bytes ahead of it; the RP writes further ahead.
+ *     Byte i of the ring is byte i ^ 1 of the RP's buffer (the cart bus
+ *     swaps the bytes of each word). */
 #define CART_AUDIO_BUFFER_OFFSET                                              \
   (CART_SHARED_VARIABLES_OFFSET + (CART_SHARED_VARIABLES_SLOTS * 4))
-#define CART_AUDIO_BUFFER_SIZE           1024
+#define CART_AUDIO_BUFFER_SIZE           2048
+#define CART_AUDIO_DMA_RING_BYTES        CART_AUDIO_BUFFER_SIZE
+#define CART_AUDIO_DMA_LEAD              768
+#define CART_AUDIO_DMA_RATE_HZ           12517u
 /* The buffer is CART_AUDIO_SLICES slices of one VBL each. The ST's VBL
  * handler moves Timer-B to the next slice and reports which one through
  * CART_ROM3_AUDIO_SLICE_WINDOW; the RP writes only the slices after it
@@ -221,7 +242,8 @@
  *   $FB8Axx  TOS version, low byte; sent just before the hello
  *   $FB8Bxx  when the blit ended, in Timer-B counts after the VBL, high byte
  *            ($FFFF: after the next VBL); userfw.s FB_SLACK_REPORT (fb.c)
- *   $FB8Cxx  the same, low byte; sent just after the high byte */
+ *   $FB8Cxx  the same, low byte; sent just after the high byte
+ *   $FB8Dxx  VBL: the DMA sound chip plays byte xx * 8 of its ring (audio.c) */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
 #define CART_ROM3_IKBD_COUNT_WINDOW  0x8300u
 #define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
@@ -233,6 +255,7 @@
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u
 #define CART_ROM3_FB_SLACK_HI_WINDOW 0x8B00u
 #define CART_ROM3_FB_SLACK_LO_WINDOW 0x8C00u
+#define CART_ROM3_DMA_POS_WINDOW     0x8D00u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.

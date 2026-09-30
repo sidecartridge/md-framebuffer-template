@@ -32,6 +32,10 @@ static int st_report = -1; /* the slice of the latest report, -1: none */
 
 uint32_t time_us_32(void) { return now_us; }
 
+/* A plain ST said hello: the YM output. */
+uint32_t st_session_hellos(void) { return 0; }
+uint8_t st_session_machine(void) { return 0; }
+
 bool add_repeating_timer_us(int64_t delay_us, repeating_timer_callback_t callback,
                             void *user_data, repeating_timer_t *out) {
   out->delay_us = delay_us;

@@ -42,6 +42,10 @@ bool st_session_consume_boot(void);
 uint8_t st_session_machine(void);
 uint16_t st_session_tos_version(void);
 
+/* The hellos seen since the RP started: a module that must start over with
+ * each ST boot compares it with the count it last saw (audio.c). */
+uint32_t st_session_hellos(void);
+
 /* Refuses to start the app on the ST: pre_auto prints `reason` and returns to
  * GEM, as it does in high resolution. At most CART_BOOT_MESSAGE_SIZE - 1
  * characters; "\r\n" breaks a line, and the ST adds one at the end. The ST
