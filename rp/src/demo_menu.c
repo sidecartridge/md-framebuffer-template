@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 
+#include "audio.h"
 #include "cart_shared.h"
 #include "debug.h"
 #include "fb.h"
@@ -435,6 +436,36 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
 }
 
 #if defined(_DEBUG) && (_DEBUG != 0)
+/* A test tone through the PCM path (DEVHOOKS_APP_TONE): a sine, whose
+ * clicks and jitter are easy to hear, on either output. */
+static const int8_t k_tone_sine[256] = {
+    0, 2, 5, 7, 10, 12, 15, 17, 20, 22, 24, 27, 29, 31, 34, 36,
+    38, 41, 43, 45, 47, 49, 51, 53, 56, 58, 60, 62, 63, 65, 67, 69,
+    71, 72, 74, 76, 77, 79, 80, 82, 83, 84, 86, 87, 88, 89, 90, 91,
+    92, 93, 94, 95, 96, 96, 97, 98, 98, 99, 99, 99, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 99, 99, 99, 98, 98, 97, 96, 96, 95, 94, 93,
+    92, 91, 90, 89, 88, 87, 86, 84, 83, 82, 80, 79, 77, 76, 74, 72,
+    71, 69, 67, 65, 63, 62, 60, 58, 56, 53, 51, 49, 47, 45, 43, 41,
+    38, 36, 34, 31, 29, 27, 24, 22, 20, 17, 15, 12, 10, 7, 5, 2,
+    0, -2, -5, -7, -10, -12, -15, -17, -20, -22, -24, -27, -29, -31, -34, -36,
+    -38, -41, -43, -45, -47, -49, -51, -53, -56, -58, -60, -62, -63, -65, -67, -69,
+    -71, -72, -74, -76, -77, -79, -80, -82, -83, -84, -86, -87, -88, -89, -90, -91,
+    -92, -93, -94, -95, -96, -96, -97, -98, -98, -99, -99, -99, -100, -100, -100, -100,
+    -100, -100, -100, -100, -100, -99, -99, -99, -98, -98, -97, -96, -96, -95, -94, -93,
+    -92, -91, -90, -89, -88, -87, -86, -84, -83, -82, -80, -79, -77, -76, -74, -72,
+    -71, -69, -67, -65, -63, -62, -60, -58, -56, -53, -51, -49, -47, -45, -43, -41,
+    -38, -36, -34, -31, -29, -27, -24, -22, -20, -17, -15, -12, -10, -7, -5, -2,
+};
+static uint32_t s_tone_phase;
+static uint32_t s_tone_step;
+
+static void tone_cb(int8_t *buf, uint32_t samples) {
+  for (uint32_t i = 0; i < samples; i++) {
+    buf[i] = k_tone_sine[s_tone_phase >> 24];
+    s_tone_phase += s_tone_step;
+  }
+}
+
 /* Extra time every frame takes, set from the host (DEVHOOKS_APP_SLOW_FRAME):
  * an app late with its frames, on demand. The sound and the publish
  * handshake must survive it. */
@@ -464,6 +495,18 @@ uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
       if (arg >= IKBD_INPUT_MODES) return 0;
       DPRINTF("dispatcher: host -> input mode %u\n", (unsigned)arg);
       ikbd_set_input_mode((ikbd_input_mode_t)arg);
+      return 1;
+    case DEVHOOKS_APP_AUDIO_OUT:
+      audio_prefer_ym(arg != 0u);
+      return 1;
+    case DEVHOOKS_APP_TONE:
+      if (arg == 0u) {
+        DPRINTF("dispatcher: host -> tone off, DEMO.YMS\n");
+        return audio_play_yms_file("DEMO.YMS") == 0 ? 1u : 0u;
+      }
+      DPRINTF("dispatcher: host -> tone %u Hz\n", (unsigned)arg);
+      s_tone_step = (uint32_t)(((uint64_t)arg << 32) / AUDIO_DMA_RATE_HZ);
+      audio_set_pcm_callback(tone_cb, AUDIO_DMA_RATE_HZ);
       return 1;
     case DEVHOOKS_APP_IKBD_CMD: {
       uint8_t cmd[CART_IKBD_OUT_MAX];
