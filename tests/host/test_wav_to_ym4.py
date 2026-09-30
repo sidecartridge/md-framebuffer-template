@@ -115,7 +115,7 @@ class YmsFile(unittest.TestCase):
     def test_a_wav_becomes_a_yms_the_rp_accepts(self):
         """A half-second tone at 11,025 Hz, converted for the RP's rate."""
         rp = audio_defines()
-        rate = rp["AUDIO_NATIVE_RATE_HZ"]
+        rate = rp["AUDIO_YM_SOURCE_RATE_HZ"]
         src_rate, n = 11025, 5512
         with tempfile.TemporaryDirectory() as tmp:
             wav_path = os.path.join(tmp, "tone.wav")

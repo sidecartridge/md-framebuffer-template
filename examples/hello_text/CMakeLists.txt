@@ -100,6 +100,12 @@ if (NOT DEFINED ENV{PICO_MALLOC_PANIC})
     set(ENV{PICO_MALLOC_PANIC} "0")
 endif()
 add_compile_definitions(PICO_MALLOC_PANIC=$ENV{PICO_MALLOC_PANIC})
+
+# The app's profile (include/profile.h): PROFILE_50FPS, the default, or
+# PROFILE_25FPS, from the environment (APP_PROFILE=PROFILE_25FPS ./build.sh).
+if (DEFINED ENV{APP_PROFILE})
+    add_compile_definitions(APP_PROFILE=$ENV{APP_PROFILE})
+endif()
 # Creates a pico-sdk subdirectory in our project for the libraries
 pico_sdk_init()
 
@@ -295,14 +301,14 @@ target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
 # the git commit) are regenerated on every build; see build_id.cmake. They are
 # rewritten only when the ID changes, so only their users recompile. The symbol
 # is kept through --gc-sections so the SWD tools can read it from flash. A
-# debug build's ID ends in +debug, and a build of another CMake type than
-# Release carries that type, so builds of one tree cannot be taken for each
-# other on the device.
+# debug build's ID ends in +debug, a build of another CMake type than
+# Release carries that type and a 25 fps build (APP_PROFILE) +25fps, so builds
+# of one tree cannot be taken for each other on the device.
 set(BUILD_ID_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/build_id)
 add_custom_target(build_id
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_LIST_DIR}
             -DOUT_DIR=${BUILD_ID_DIR} -DDEBUG_BUILD=${_DEBUG}
-            -DCMAKE_TYPE=${CMAKE_BUILD_TYPE}
+            -DCMAKE_TYPE=${CMAKE_BUILD_TYPE} -DAPP_PROFILE=$ENV{APP_PROFILE}
             -P ${CMAKE_CURRENT_LIST_DIR}/build_id.cmake
     BYPRODUCTS ${BUILD_ID_DIR}/build_id.h ${BUILD_ID_DIR}/build_id.c
     COMMENT "Checking the build ID")

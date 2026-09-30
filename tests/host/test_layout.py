@@ -19,6 +19,8 @@ RP_SRC = os.path.join(REPO, "rp", "src")
 MFP_CLOCK_HZ = 2457600
 # MFP timer control values in delay mode -> prescaler.
 MFP_PRESCALER = {1: 4, 2: 10, 3: 16, 4: 50, 5: 64, 6: 100, 7: 200}
+# The STE's DMA sound rates, by the mode register's bits 1-0.
+DMA_RATES = [6258, 12517, 25033, 50066]
 
 
 def evaluate(expr, known):
@@ -158,7 +160,17 @@ PAIRS = [
      lambda rp: rp["CART_AUDIO_SLICE_BYTES"]),
     ("DMA ring", lambda st: st["AUDIO_DMA_RING_BYTES"],
      lambda rp: rp["CART_AUDIO_DMA_RING_BYTES"]),
-    ("DMA lead", lambda st: st["AUDIO_DMA_LEAD"], lambda rp: rp["CART_AUDIO_DMA_LEAD"]),
+    ("DMA position unit", lambda st: st["AUDIO_DMA_POS_UNIT"],
+     lambda rp: rp["CART_AUDIO_DMA_POS_UNIT"]),
+    # The profiles: the word, and what each one sets on the ST.
+    ("profile word", lambda st: window(st, "PROFILE_ADDR"), lambda rp: rp["CART_PROFILE_OFFSET"]),
+    *[(f"profile {p}: {what}", lambda st, k=f"PROFILE_{p}_{name}": st[k],
+       lambda rp, k=f"CART_PROFILE_{p}_{name}": rp[k])
+      for p in ("50FPS", "25FPS")
+      for what, name in (("VBLs a frame", "VBLS"), ("Timer-B count", "TIMERB_COUNT"),
+                         ("DMA mode", "DMA_MODE"), ("DMA lead", "DMA_LEAD"))],
+    ("profile: 50 fps", lambda st: st["PROFILE_50FPS"], lambda rp: rp["CART_PROFILE_50FPS"]),
+    ("profile: 25 fps", lambda st: st["PROFILE_25FPS"], lambda rp: rp["CART_PROFILE_25FPS"]),
     ("audio output word", lambda st: window(st, "AUDIO_OUT_ADDR"),
      lambda rp: rp["CART_AUDIO_OUT_OFFSET"]),
     ("audio output: auto", lambda st: st["AUDIO_OUT_AUTO"], lambda rp: rp["CART_AUDIO_OUT_AUTO"]),
@@ -211,26 +223,34 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_TOS_HI_WINDOW"]),
     ("TOS low byte window", lambda st: rom3(st, "ST_TOS_LO_WINDOW"),
      lambda rp: rp["CART_ROM3_TOS_LO_WINDOW"]),
-    ("blit slack window", lambda st: rom3(st, "FB_SLACK_WINDOW"),
-     lambda rp: rp["CART_ROM3_FB_SLACK_WINDOW"]),
+    ("stopwatch point window", lambda st: rom3(st, "STUDY_POINT_WINDOW"),
+     lambda rp: rp["CART_ROM3_STUDY_POINT_WINDOW"]),
+    ("stopwatch ticks high window", lambda st: rom3(st, "STUDY_HI_WINDOW"),
+     lambda rp: rp["CART_ROM3_STUDY_HI_WINDOW"]),
+    ("stopwatch ticks low window", lambda st: rom3(st, "STUDY_LO_WINDOW"),
+     lambda rp: rp["CART_ROM3_STUDY_LO_WINDOW"]),
     ("DMA position window", lambda st: rom3(st, "DMA_POS_WINDOW"),
      lambda rp: rp["CART_ROM3_DMA_POS_WINDOW"]),
     ("ST features window", lambda st: rom3(st, "ST_FEATURES_WINDOW"),
      lambda rp: rp["CART_ROM3_ST_FEATURES_WINDOW"]),
     ("ST feature: blitter", lambda st: st["ST_FEATURE_BLITTER"],
      lambda rp: rp["CART_ST_FEATURE_BLITTER"]),
-    # The blit slack: Timer-A's count, in nanoseconds (fb.c converts).
-    ("Timer-A slack count (ns)", lambda st: round(
-        MFP_PRESCALER[st["TIMERA_SLACK_DIV200"]] * 1e9 / MFP_CLOCK_HZ, -1),
-     lambda rp: rp["FB_TIMERA_COUNT_NS"]),
-    # The sample rate: Timer-B plays what the RP converts at its rate.
-    ("audio sample rate (Hz)", lambda st: round(
-        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
-     lambda rp: rp["AUDIO_NATIVE_RATE_HZ"]),
-    ("built-in jingle's sample rate (Hz)", lambda st: round(
-        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),
+    # The stopwatch: Timer-A's tick, in nanoseconds (fb.c converts).
+    ("stopwatch tick (ns)", lambda st: round(
+        MFP_PRESCALER[st["TIMERA_STUDY_DIV10"]] * 1e9 / MFP_CLOCK_HZ),
+     lambda rp: rp["FB_STOPWATCH_TICK_NS"]),
+    # The sample rates: Timer-B plays what the RP converts at its rate, the
+    # DMA chip what it converts at the chip's.
+    *[(f"profile {p}: YM rate (Hz)", lambda st, p=p: round(
+        MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st[f"PROFILE_{p}_TIMERB_COUNT"])),
+       lambda rp, p=p: rp[f"CART_PROFILE_{p}_YM_RATE_HZ"]) for p in ("50FPS", "25FPS")],
+    *[(f"profile {p}: DMA rate (Hz)", lambda st, p=p: DMA_RATES[st[f"PROFILE_{p}_DMA_MODE"] & 3],
+       lambda rp, p=p: rp[f"CART_PROFILE_{p}_DMA_RATE_HZ"]) for p in ("50FPS", "25FPS")],
+    # YM sources (the built-in jingle, .YMS files) at the RP's source rate.
+    ("built-in jingle's sample rate (Hz)", lambda st: rp_names()["AUDIO_YM_SOURCE_RATE_HZ"],
      lambda rp: rp["AUDIO_SAMPLE_RATE_HZ"]),
 ]
+PROFILES = ("50FPS", "25FPS")
 
 
 class Layout(unittest.TestCase):
@@ -243,40 +263,51 @@ class Layout(unittest.TestCase):
                                  f"{what}: the ST side and the RP side differ")
 
     def test_audio_bytes_per_frame(self):
-        """The RP refills what the ST plays in one frame: two bytes per
-        Timer-B interrupt, within one sample."""
+        """In each profile the RP refills what the ST plays in one frame: two
+        bytes per Timer-B interrupt, within one sample; and a DMA FIFO slot
+        holds a VBL of the chip's samples."""
         st, rp = st_names(), rp_names()
-        rate = MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])
-        samples = rate * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
-        self.assertLess(abs(rp["AUDIO_FILL_BYTES_PER_VBL"] / 2 - samples), 1,
-                        f"{rp['AUDIO_FILL_BYTES_PER_VBL']} bytes per frame for "
-                        f"{samples:.1f} samples")
-        self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_BUFFER_SIZE"])
+        for p in PROFILES:
+            with self.subTest(p):
+                rate = MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] *
+                                       st[f"PROFILE_{p}_TIMERB_COUNT"])
+                samples = rate * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
+                ym = rp[f"CART_PROFILE_{p}_YM_BYTES"]
+                self.assertLess(abs(ym / 2 - samples), 1,
+                                f"{ym} bytes per frame for {samples:.1f} samples")
+                self.assertEqual(ym % 2, 0)
+                dma = rp[f"CART_PROFILE_{p}_DMA_RATE_HZ"] * rp["AUDIO_FRAME_PERIOD_US"] / 1e6
+                self.assertGreaterEqual(rp[f"CART_PROFILE_{p}_DMA_BYTES"], dma)
 
     def test_audio_slices(self):
-        """The slices fit in the audio buffer, a VBL of samples fits in one,
-        and the ST's shift is the slice size."""
+        """The slices fit in the audio buffer, a VBL of samples fits in one in
+        each profile, and the ST's shift is the slice size."""
         st, rp = st_names(), rp_names()
         self.assertLessEqual(rp["CART_AUDIO_SLICES"] * rp["CART_AUDIO_SLICE_BYTES"],
                              rp["CART_AUDIO_BUFFER_SIZE"])
-        self.assertLessEqual(rp["AUDIO_FILL_BYTES_PER_VBL"], rp["CART_AUDIO_SLICE_BYTES"])
+        for p in PROFILES:
+            self.assertLessEqual(rp[f"CART_PROFILE_{p}_YM_BYTES"], rp["CART_AUDIO_SLICE_BYTES"])
         self.assertEqual(1 << st["AUDIO_SLICE_SHIFT"], st["AUDIO_SLICE_BYTES"])
         slices = rp["CART_AUDIO_SLICES"]
         self.assertEqual(slices & (slices - 1), 0, "the ST masks the slice number")
 
     def test_dma_ring(self):
-        """The DMA ring masks as a power of two, the lead and the ST's copies
-        go by 8 bytes and stay under half a ring, and the rate the ST sets is
-        the one the RP converts to."""
+        """The DMA ring masks as a power of two and its position report fits
+        a byte; in each profile the lead goes by the report's unit, covers
+        three VBLs and stays under half a ring, and the chip plays mono."""
         st, rp = st_names(), rp_names()
-        ring, lead = rp["CART_AUDIO_DMA_RING_BYTES"], rp["CART_AUDIO_DMA_LEAD"]
+        ring, unit = rp["CART_AUDIO_DMA_RING_BYTES"], rp["CART_AUDIO_DMA_POS_UNIT"]
         self.assertEqual(ring & (ring - 1), 0)
-        self.assertEqual(lead % 8, 0)
-        self.assertLess(lead, ring // 2)
+        self.assertEqual(ring // unit, 256, "the ST reports the position in one byte")
         self.assertEqual(st["UFW_DMA_RING"] % ring, 0, "the ST masks ring offsets")
-        rates = [6258, 12517, 25033, 50066]
-        self.assertEqual(rates[st["DMA_MODE_PLAY"] & 3], rp["CART_AUDIO_DMA_RATE_HZ"])
-        self.assertTrue(st["DMA_MODE_PLAY"] & 0x80, "mono")
+        self.assertEqual(1 << 4, st["AUDIO_DMA_POS_UNIT"], "the ST shifts by 4")
+        for p in PROFILES:
+            with self.subTest(p):
+                lead = rp[f"CART_PROFILE_{p}_DMA_LEAD"]
+                self.assertEqual(lead % unit, 0)
+                self.assertLess(lead, ring // 2)
+                self.assertGreaterEqual(lead, 3 * rp[f"CART_PROFILE_{p}_DMA_RATE_HZ"] // 50)
+                self.assertTrue(st[f"PROFILE_{p}_DMA_MODE"] & 0x80, "mono")
 
     def test_rom3_windows_distinct(self):
         """Every ROM3 signalling window has a high byte of its own."""

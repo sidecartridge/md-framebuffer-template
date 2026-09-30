@@ -2,10 +2,12 @@
 /* The DMA sound output (audio.c) against a simulated STE, and the
  * conversions between YM pairs and PCM.
  *
- * The STE plays its ring at 250.4 samples a VBL (12,517 Hz); at every VBL
- * userfw reports where it plays, rounded to 8 bytes, and copies the cart
- * buffer, the ring's mirror, up to CART_AUDIO_DMA_LEAD bytes ahead (byte i
- * of the ring is byte i ^ 1 of the RP's buffer). Everything the chip plays
+ * The STE plays its ring at the profile's rate (250.3 samples a VBL at
+ * 12,517 Hz, 500.7 at 25,033: the Makefile builds this test for both
+ * profiles); at every VBL userfw reports where it plays, rounded to
+ * CART_AUDIO_DMA_POS_UNIT bytes, and copies the cart buffer, the ring's
+ * mirror, up to the profile's lead ahead (byte i of the ring is byte i ^ 1
+ * of the RP's buffer). Everything the chip plays
  * must be the source in order, silence before it starts, or, when the FIFO
  * ran dry, the last sample held: never a stale or a skipped sample. */
 #include <string.h>
@@ -20,8 +22,11 @@
 #define WRITER_RUNS_PER_VBL 5
 #define RING CART_AUDIO_DMA_RING_BYTES
 #define MASK (RING - 1u)
-/* 12,517 Hz x 20.0 ms: the chip's samples per VBL, 16.16. */
-#define CHIP_PER_VBL_Q16 16410214u
+/* The chip's samples per VBL, 16.16. */
+#define CHIP_PER_VBL_Q16 \
+  ((uint32_t)(((uint64_t)PROFILE_DMA_RATE_HZ * VBL_US << 16) / 1000000u))
+/* Five VBLs of the chip's samples: the sound starts within them. */
+#define FIVE_VBLS (5u * ((CHIP_PER_VBL_Q16 >> 16) + 1u))
 
 unsigned int __rom_in_ram_start__[0x10000 / sizeof(unsigned int)];
 extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioOutput;
@@ -30,7 +35,7 @@ extern uint32_t audioSlicesWritten, audioUnderruns, audioLateSlices, audioOutput
 
 static uint32_t now_us;
 static repeating_timer_t *writer;
-static int dma_report = -1;   /* the latest DMA position report / 8 */
+static int dma_report = -1;   /* the latest DMA position report */
 static int slice_report = -1; /* the latest audio slice report */
 static uint32_t hellos;
 static uint8_t machine;
@@ -112,14 +117,14 @@ static void st_vbl_dma(bool skip) {
   st_vbl++;
   if (skip) return;
   slice_report = (int)(st_vbl % CART_AUDIO_SLICES);
-  uint32_t p = (chip_q16 >> 16) & MASK & ~7u;
-  dma_report = (int)(p / 8u);
-  uint32_t e = (p + CART_AUDIO_DMA_LEAD) & MASK;
+  uint32_t p = (chip_q16 >> 16) & MASK & ~(CART_AUDIO_DMA_POS_UNIT - 1u);
+  dma_report = (int)(p / CART_AUDIO_DMA_POS_UNIT);
+  uint32_t e = (p + PROFILE_DMA_LEAD) & MASK;
   uint32_t f = st_front;
   uint32_t n = (e - f) & MASK;
   if (n > RING / 2u) {
-    f = (e - CART_AUDIO_DMA_LEAD) & MASK;
-    n = CART_AUDIO_DMA_LEAD;
+    f = (e - PROFILE_DMA_LEAD) & MASK;
+    n = PROFILE_DMA_LEAD;
   }
   for (uint32_t i = 0; i < n; i++) {
     uint32_t at = (f + i) & MASK;
@@ -212,7 +217,7 @@ static void test_steady(void) {
   uint32_t late0 = audioLateSlices, under0 = audioUnderruns;
   for (int i = 0; i < 1000; i++) frame(true, false);
   uint32_t s = first_sound(0);
-  CHECK(s < 5u * 251u); /* the sound starts within five VBLs */
+  CHECK(s < FIVE_VBLS); /* the sound starts within five VBLs */
   uint32_t repeats;
   CHECK_EQ(follows(s, 0, false, &repeats), n_played - s);
   CHECK_EQ(audioLateSlices, late0);
@@ -268,7 +273,7 @@ static void test_st_reset(void) {
   st_boot(0x11);
   for (int i = 0; i < 300; i++) frame(true, false);
   uint32_t s = first_sound(before);
-  CHECK(s - before < 5u * 251u);
+  CHECK(s - before < FIVE_VBLS);
   /* The source went on while the ST rebooted: find where. */
   uint32_t k = 0;
   while (k < PATTERN && played[s] != pattern[k]) k++;
@@ -335,11 +340,13 @@ static void test_ym_source_on_dma(void) {
 }
 
 /* PCM on the YM: the slices hold the table's pairs for the samples' upper
- * 6 bits, in order (5,585 Hz: no resampling). */
-static void pattern_5585_source(void) { audio_play_pcm_loop(pattern, PATTERN, 5585); }
+ * 6 bits, in order (the YM's own rate: no resampling). */
+static void pattern_ym_rate_source(void) {
+  audio_play_pcm_loop(pattern, PATTERN, PROFILE_YM_RATE_HZ);
+}
 
 static void test_pcm_source_on_ym(void) {
-  boot_with(0x00, pattern_5585_source);
+  boot_with(0x00, pattern_ym_rate_source);
   CHECK_EQ(audioOutput, 1);
   CHECK(!audio_uses_dma());
   const uint8_t *buf = cart_buffer();

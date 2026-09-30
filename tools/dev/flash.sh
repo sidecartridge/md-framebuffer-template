@@ -49,9 +49,13 @@ while [ $# -gt 0 ]; do
 done
 
 NAME="$TYPE"
-# Another CMake type (RP_CMAKE_BUILD_TYPE) builds in its own folder.
+# Another CMake type (RP_CMAKE_BUILD_TYPE) builds in its own folder, and so
+# does the 25 fps profile (APP_PROFILE, rp/src/include/profile.h).
 if [ -n "${RP_CMAKE_BUILD_TYPE:-}" ]; then
   NAME="$NAME-$(printf '%s' "$RP_CMAKE_BUILD_TYPE" | tr '[:upper:]' '[:lower:]')"
+fi
+if [ "${APP_PROFILE:-}" = "PROFILE_25FPS" ]; then
+  NAME="$NAME-25fps"
 fi
 # A source outside the repo gets its own build folder, keyed by its path: two
 # checkouts are both called rp/src, and sharing a folder confuses CMake's cache.

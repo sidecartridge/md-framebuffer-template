@@ -74,16 +74,31 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 ; 1 when measuring.
 FBDRV_DEBUG_MARKS     equ 0
 
-; FB_SLACK_REPORT = 1 tells the RP, after every blit, how long after the VBL
-; the blit ended: MFP Timer-A, restarted by userfw_vbl and counting down
-; without an interrupt (/200: 81.4 us a count, 255 counts = 20.75 ms), read
-; after the blit and reported at FB_SLACK_WINDOW + counts elapsed, $FF when
-; the next VBL came first. Debug builds of the RP keep a histogram of the
-; slack left before the VBL (fb.c). About 10 us a VBL. Works on both sound
-; paths (Timer-A is free on both).
-FB_SLACK_REPORT       equ 0
+; TIME_STUDY = 1 turns MFP Timer-A into a free-running stopwatch: /10,
+; 4.07 us a tick, its wraps (every 256 ticks) counted by an interrupt
+; (userfw_timera_tick, about 1% of the CPU). The VBL and points of the loop
+; (the wake, the copy's start and end, the loop's end) report the
+; stopwatch's low 16 bits (STUDY_POINT, three ROM3 reads), so every duration
+; is a difference on one timeline, even across a VBL. Debug builds of the RP
+; keep the points and the slack before the VBL (fb.c; tools/dev/swd.py
+; stopwatch). About 40 us a VBL: measuring builds only.
+TIME_STUDY            equ 0
 MFP_TADR              equ $FFFFFA1F          ; Timer-A data: the count while it runs
-TIMERA_SLACK_DIV200   equ 7                  ; Timer-A control: delay mode, /200
+TIMERA_STUDY_DIV10    equ 2                  ; Timer-A control: delay mode, /10
+STUDY_POINT_WAKE      equ 0
+STUDY_POINT_COPY      equ 1
+STUDY_POINT_COPIED    equ 2
+STUDY_POINT_IDLE      equ 3
+STUDY_POINT_VBL       equ 4
+
+; STUDY_POINT n: tells the RP the loop reached point n, with the stopwatch's
+; ticks (TIME_STUDY). Clobbers D0-D2 and A1.
+STUDY_POINT macro
+    ifne    TIME_STUDY
+    moveq   #\1, d2
+    bsr     study_report
+    endc
+    endm
 
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
@@ -103,6 +118,17 @@ UFW_AUDIO_DMA         equ $00077F82          ; word
 UFW_DMA_FRONT         equ $00077F84          ; word: an offset in the ring
 ; A blitter found at boot (XBIOS Blitmode): 1, else 0 (see BLIT_MODE_ADDR).
 UFW_HAS_BLITTER       equ $00077F86          ; word
+; The profile read at boot (PROFILE_ADDR): the DMA chip's lead, the VBLs a
+; frame, Timer-B's count, the DMA chip's mode. The VBLs counted by userfw_vbl,
+; and the count when the last frame was taken.
+UFW_DMA_LEAD          equ $00077F88          ; word
+UFW_VBLS_A_FRAME      equ $00077F8A          ; word
+UFW_TIMERB_COUNT      equ $00077F8C          ; word
+UFW_DMA_MODE          equ $00077F8E          ; word
+UFW_VBL_COUNT         equ $00077F90          ; word
+UFW_FRAME_VBL         equ $00077F92          ; word
+; The stopwatch's wraps (TIME_STUDY).
+UFW_SW_WRAPS          equ $00077F94          ; word
 UFW_VBL_VEC_SAVE      equ $00077FE0          ; longword: TOS VBL vector ($70)
 UFW_PHYSBASE_SAVE     equ $00077FE8          ; longword: XBIOS Physbase result
 UFW_SCREEN_PAGE       equ $00077FEC          ; longword: current draw page address
@@ -124,9 +150,6 @@ UFW_IKBD_OUT_GEN      equ $00077FF6          ; word
 UFW_IKBD_OUT_STEP     equ $00077FF8          ; word
 ; IKBD bytes userfw_acia_irq has read; userfw_vbl reports its low byte.
 UFW_IKBD_COUNT        equ $00077FFA          ; word
-; The audio slice when the blit started: another one at its end means the
-; next VBL came first (FB_SLACK_REPORT).
-UFW_SLACK_SLICE       equ $00077FFE          ; word
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -335,35 +358,32 @@ MFP_TBCR              equ $FFFFFA1B          ; Timer-B control register (delay-m
 MFP_TBDR              equ $FFFFFA21          ; Timer-B data register (8-bit countdown)
 
 ; Timer-B audio rate, and everything that follows from it. MFP master
-; clock = 2.4576 MHz, /4 prescaler, count 110:
-;   f = 2.4576 MHz / (4 * 110) = 5,585.45 Hz
-; (~10.9% slower than STE-low's 6,258 Hz; the count was raised from 98
-; to 110 to free ~1500 cyc/VBL for the FB_COPY_LINES=200 blit).
-;   -> 111.7 samples per PAL VBL, 2 bytes each (vA, vB): 224 bytes per
-;      VBL (AUDIO_FILL_BYTES_PER_VBL in rp/src/audio.c), one audio slice
-;      of AUDIO_SLICE_BYTES (inc/sidecart_layout.s);
-;   -> the RP's rate AUDIO_NATIVE_RATE_HZ (audio.c), the rate .YMS files
-;      must carry, and the rate the built-in jingle (audio_sample.h) is
-;      converted at (tools/wav_to_ym4.py --target-rate 5585).
+; clock = 2.4576 MHz, /4 prescaler, the profile's count (PROFILE_ADDR):
+;   PROFILE_50FPS: 110 -> 5,585.45 Hz, 111.7 samples per PAL VBL;
+;   PROFILE_25FPS:  28 -> 21,942.86 Hz, 438.2 samples per PAL VBL.
+;   -> 2 bytes each (vA, vB): 224 or 878 bytes per VBL (the RP's
+;      PROFILE_YM_BYTES_PER_VBL, rp/src/include/profile.h), within one
+;      audio slice of AUDIO_SLICE_BYTES (inc/sidecart_layout.s);
+;   -> the RP's rates (cart_shared.h CART_PROFILE_*_YM_RATE_HZ). YM sources
+;      (.YMS files, the built-in jingle) stay at 5,585 Hz: the RP resamples.
 ; tests/host/test_layout.py checks that those places agree.
 TIMERB_PRESCALER      equ 1                  ; /4 (delay mode)
-TIMERB_COUNT          equ 110                ; ~5,585 Hz (~112 samples/PAL VBL)
 
 ; STE / Mega STE DMA sound. The chip plays 8-bit samples from ST RAM only,
 ; so userfw keeps a ring of AUDIO_DMA_RING_BYTES there, the second use of
-; Atari RAM after the screen pages and on the same assumption: the 2 KB just
-; below screen page A. The chip loops over it at 12,517 Hz mono; every VBL
-; userfw copies into it, from the audio buffer that mirrors it, what the RP
-; has written ahead of the chip (see AUDIO_BUFFER_ADDR).
+; Atari RAM after the screen pages and on the same assumption: the 4 KB just
+; below screen page A. The chip loops over it mono, at the profile's rate
+; (12,517 or 25,033 Hz); every VBL userfw copies into it, from the audio
+; buffer that mirrors it, what the RP has written ahead of the chip (see
+; AUDIO_BUFFER_ADDR).
 DMA_SND_CTRL          equ $FFFF8901          ; bit 0 play, bit 1 loop
 DMA_SND_START         equ $FFFF8903          ; frame start: high, mid (+2), low (+4)
 DMA_SND_COUNT_MID     equ $FFFF890B          ; where it plays (read only): middle byte
 DMA_SND_COUNT_LOW     equ $FFFF890D          ;   and low byte
 DMA_SND_END           equ $FFFF890F          ; frame end: high, mid (+2), low (+4)
 DMA_SND_MODE          equ $FFFF8921          ; bits 1-0 rate, bit 7 mono
-DMA_MODE_PLAY         equ $81                ; mono, 12,517 Hz
 DMA_CTRL_LOOP_PLAY    equ 3
-UFW_DMA_RING          equ $0006F800          ; AUDIO_DMA_RING_BYTES, up to $6FFFF
+UFW_DMA_RING          equ $0006F000          ; AUDIO_DMA_RING_BYTES, up to $6FFFF
 MACHINE_FAMILY_STE    equ $1                 ; the hello byte's family: STE, Mega STE
 ; The LMC1992 behind the Microwire: the DMA sound goes through it. userfw
 ; sets what TOS sets at boot, in case something changed it: master, left
@@ -713,6 +733,28 @@ userfw:
     clr.w   UFW_AUDIO_SLICE
     movea.l #AUDIO_BUFFER_ADDR, a0
 
+    ; The app's profile (PROFILE_ADDR, written by the RP before we booted):
+    ; the frames a VBL, Timer-B's count, the DMA chip's mode and lead.
+    lea     .profile_50(pc), a1
+    cmpi.w  #PROFILE_25FPS, PROFILE_ADDR
+    bne.s   .profile_read
+    lea     .profile_25(pc), a1
+.profile_read:
+    move.w  (a1)+, UFW_VBLS_A_FRAME
+    move.w  (a1)+, UFW_TIMERB_COUNT
+    move.w  (a1)+, UFW_DMA_MODE
+    move.w  (a1)+, UFW_DMA_LEAD
+    clr.w   UFW_VBL_COUNT
+    clr.w   UFW_FRAME_VBL
+    bra.s   .profile_done
+.profile_50:
+    dc.w    PROFILE_50FPS_VBLS, PROFILE_50FPS_TIMERB_COUNT
+    dc.w    PROFILE_50FPS_DMA_MODE, PROFILE_50FPS_DMA_LEAD
+.profile_25:
+    dc.w    PROFILE_25FPS_VBLS, PROFILE_25FPS_TIMERB_COUNT
+    dc.w    PROFILE_25FPS_DMA_MODE, PROFILE_25FPS_DMA_LEAD
+.profile_done:
+
     ; The sound goes out through the DMA chip on an STE or a Mega STE,
     ; unless the RP keeps us to the YM (AUDIO_OUT_ADDR); through Timer-B and
     ; the YM elsewhere. The RP applies the same rule to what it writes.
@@ -744,7 +786,7 @@ userfw:
     move.b  d0, DMA_SND_END+2.w
     lsr.l   #8, d0
     move.b  d0, DMA_SND_END.w
-    move.b  #DMA_MODE_PLAY, DMA_SND_MODE.w
+    move.b  UFW_DMA_MODE+1, DMA_SND_MODE.w
     lea     userfw_mw_cmds(pc), a1
     moveq   #((userfw_mw_cmds_end - userfw_mw_cmds) / 2) - 1, d1
 .mw_next:
@@ -763,11 +805,21 @@ userfw:
     bra.s   .sound_done
 
 .sound_ym:
-    move.b  #TIMERB_COUNT, MFP_TBDR.w
+    move.b  UFW_TIMERB_COUNT+1, MFP_TBDR.w
     move.b  #TIMERB_PRESCALER, MFP_TBCR.w
     bset    #0, MFP_IERA.w                ; Timer-B IRQ enable (IERA bit 0)
     bset    #0, MFP_IMRA.w                ; Timer-B IRQ unmask (IMRA bit 0)
 .sound_done:
+    ifne    TIME_STUDY
+    lea     userfw_timera_tick(pc), a1    ; the stopwatch (see TIME_STUDY)
+    move.l  a1, VEC_TIMERA.w
+    clr.b   MFP_TACR.w
+    clr.b   MFP_TADR.w                    ; 256 ticks a wrap
+    clr.w   UFW_SW_WRAPS
+    bset    #5, MFP_IERA.w                ; its wraps (Timer-A)
+    bset    #5, MFP_IMRA.w
+    move.b  #TIMERA_STUDY_DIV10, MFP_TACR.w
+    endc
 
     ; Interrupts back on (caller's level, typically $2300).
     move.w  (sp)+, sr
@@ -807,17 +859,19 @@ userfw:
     stop    #$2300
     tst.w   UFW_VBL_FLAG
     bne.s   .wait_vbl
+    STUDY_POINT STUDY_POINT_WAKE
 
     ifne    FBDRV_DEBUG_MARKS
     move.w  #BLIT_MARK_VSYNC, PALETTE_IDX0.w   ; border = vsync mark
     endc
 
     ; DMA sound (see AUDIO_BUFFER_ADDR): where the chip plays now, by
-    ; 8 bytes, for the RP; then the mirror copied into the ring from where
-    ; the last copy ended up to AUDIO_DMA_LEAD bytes ahead of the chip. The
-    ; counter moves while it is read: its middle byte is read again. A
-    ; frontier out of step (the first VBL, a long stall) copies the lead.
-    ; About 0.35 ms at 8 MHz; Timer-B, off on this path, took 1.6 ms.
+    ; AUDIO_DMA_POS_UNIT bytes, for the RP; then the mirror copied into the
+    ; ring from where the last copy ended up to the profile's lead
+    ; (UFW_DMA_LEAD) ahead of the chip. The counter moves while it is read:
+    ; its middle byte is read again. A frontier out of step (the first VBL,
+    ; a long stall) copies the lead. About 0.35 ms at 12,517 Hz, 0.7 at
+    ; 25,033 Hz; Timer-B, off on this path, takes 2.1 ms at 5,585 Hz.
     tst.w   UFW_AUDIO_DMA
     beq     .dma_done
 .dma_pos:
@@ -829,12 +883,12 @@ userfw:
     lsl.w   #8, d0
     move.b  d1, d0
     sub.w   #(UFW_DMA_RING & $FFFF), d0
-    and.w   #(AUDIO_DMA_RING_BYTES - 8), d0
+    and.w   #(AUDIO_DMA_RING_BYTES - AUDIO_DMA_POS_UNIT), d0
     move.w  d0, d1
-    lsr.w   #3, d1
+    lsr.w   #4, d1                        ; / AUDIO_DMA_POS_UNIT
     lea     DMA_POS_WINDOW, a1
     tst.b   (a1, d1.w)
-    add.w   #AUDIO_DMA_LEAD, d0
+    add.w   UFW_DMA_LEAD, d0
     and.w   #(AUDIO_DMA_RING_BYTES - 1), d0 ; copy up to here
     move.w  UFW_DMA_FRONT, d1             ; from where the last copy ended
     move.w  d0, UFW_DMA_FRONT
@@ -844,9 +898,9 @@ userfw:
     cmp.w   #(AUDIO_DMA_RING_BYTES / 2), d2
     bls.s   .dma_count
     move.w  d0, d1
-    sub.w   #AUDIO_DMA_LEAD, d1
+    sub.w   UFW_DMA_LEAD, d1
     and.w   #(AUDIO_DMA_RING_BYTES - 1), d1
-    move.w  #AUDIO_DMA_LEAD, d2
+    move.w  UFW_DMA_LEAD, d2
 .dma_count:
     lsr.w   #3, d2
     subq.w  #1, d2
@@ -873,14 +927,20 @@ userfw:
     movem.l d0-d7, PALETTE_BASE.w
 
     ; Blit only a frame the RP has finished publishing, and only once
-    ; (see FB_FRAME_COUNTER_ADDR). Nothing new: no blit, no flip, no ack.
+    ; (see FB_FRAME_COUNTER_ADDR), and no sooner than the profile's VBLs a
+    ; frame after the last one (PROFILE_25FPS: every second VBL, on every
+    ; machine; a frame late by a VBL delays only the next one). Nothing
+    ; new: no blit, no flip, no ack.
+    move.w  UFW_VBL_COUNT, d1
+    sub.w   UFW_FRAME_VBL, d1
+    cmp.w   UFW_VBLS_A_FRAME, d1
+    blo     .input_check
     move.w  FB_FRAME_COUNTER_ADDR, d0
     cmp.w   UFW_LAST_FRAME, d0
     beq     .input_check
     move.w  d0, UFW_LAST_FRAME
-    ifne    FB_SLACK_REPORT
-    move.w  UFW_AUDIO_SLICE, UFW_SLACK_SLICE
-    endc
+    move.w  UFW_VBL_COUNT, UFW_FRAME_VBL
+    STUDY_POINT STUDY_POINT_COPY
 
     ; The copy: the blitter when there is one and the RP asks for it, or
     ; leaves it to us on the DMA sound path (BLIT_MODE_ADDR), else
@@ -980,6 +1040,7 @@ userfw:
     endc
 
 .after_copy:
+    STUDY_POINT STUDY_POINT_COPIED
 
     ; Flip the video base to the just-written page. A5 still holds
     ; UFW_SCREEN_PAGE (preserved by FBDRV_INLINE). Only the MID byte
@@ -1004,23 +1065,6 @@ userfw:
     ; commemul ring captures the read; fb_publish() on the RP blocks
     ; until it sees this before running the next chunky-to-planar.
     tst.b   VBLSYNC_ADDR
-
-    ifne    FB_SLACK_REPORT
-    ; How long after the VBL the blit ended (see FB_SLACK_REPORT): Timer-A's
-    ; counts since userfw_vbl restarted it; $FF when the next VBL came first
-    ; (another audio slice than when the blit started).
-    moveq   #0, d0
-    move.b  MFP_TADR.w, d0
-    move.w  #255, d1
-    sub.w   d0, d1
-    move.w  UFW_AUDIO_SLICE, d2
-    cmp.w   UFW_SLACK_SLICE, d2
-    beq.s   .slack_report
-    move.w  #255, d1
-.slack_report:
-    lea     FB_SLACK_WINDOW, a1
-    tst.b   (a1, d1.w)
-    endc
 
 .input_check:
     ; IKBD commands from the RP (IKBD_OUT_ADDR): when their generation
@@ -1069,6 +1113,7 @@ userfw:
     ; CMD_BOOT_GEM into CMD_MAGIC_SENTINEL_ADDR on ESC press. CMD_RESET:
     ; the RP is about to reboot into Booster. Any other
     ; sentinel value (NOP, future commands) leaves the loop running.
+    STUDY_POINT STUDY_POINT_IDLE
     move.l  CMD_MAGIC_SENTINEL_ADDR, d0
     cmp.l   #CMD_RESET, d0
     beq     .cold_reset
@@ -1185,10 +1230,12 @@ userfw_vbl:
     ; userfw_acia_irq cannot run in the middle of the count report either,
     ; so every byte it counted was forwarded before the report.
     move.w  #$2700, sr
-    ifne    FB_SLACK_REPORT
-    clr.b   MFP_TACR.w                    ; Timer-A from 255 again (see FB_SLACK_REPORT)
-    move.b  #255, MFP_TADR.w
-    move.b  #TIMERA_SLACK_DIV200, MFP_TACR.w
+    addq.w  #1, UFW_VBL_COUNT
+    ifne    TIME_STUDY
+    movem.l d0-d2/a1, -(sp)
+    moveq   #STUDY_POINT_VBL, d2
+    bsr     study_report
+    movem.l (sp)+, d0-d2/a1
     endc
     move.l  d0, -(sp)
     moveq   #0, d0
@@ -1201,7 +1248,8 @@ userfw_vbl:
     move.w  d0, UFW_AUDIO_SLICE
     movea.l #AUDIO_SLICE_WINDOW, a0
     tst.b   (a0, d0.w)
-    lsl.w   #AUDIO_SLICE_SHIFT, d0
+    lsl.w   #8, d0                        ; x AUDIO_SLICE_BYTES: an immediate
+    lsl.w   #AUDIO_SLICE_SHIFT-8, d0      ; shifts 8 bits at most
     movea.l #AUDIO_BUFFER_ADDR, a0
     adda.w  d0, a0
     move.l  (sp)+, d0
@@ -1209,8 +1257,8 @@ userfw_vbl:
     rte
 
 ; -------------------------------------------------------------------
-; userfw_timerb_audio -- Timer-B IRQ handler. Fires at ~5,585 Hz
-; (Timer-B in /4 delay mode, TBDR = TIMERB_COUNT = 110).
+; userfw_timerb_audio -- Timer-B IRQ handler. Fires at the profile's rate
+; (Timer-B in /4 delay mode, TBDR = the profile's count: 5,585 or 21,943 Hz).
 ;
 ; Dual-channel Ghostbusters-LUT mode: each sample in the cart buffer
 ; is 2 bytes = (vA, vB), pre-resolved at build time by running the
@@ -1282,6 +1330,45 @@ userfw_acia_irq:
 ; framebuffer template owns the screen + IKBD until ESC exit.
 userfw_dummy_irq:
     rte
+
+    ifne    TIME_STUDY
+; -------------------------------------------------------------------
+; userfw_timera_tick -- the stopwatch's wrap (TIME_STUDY): every 256
+; ticks of Timer-A, 1.04 ms.
+userfw_timera_tick:
+    addq.w  #1, UFW_SW_WRAPS
+    rte
+
+; study_report -- tells the RP point D2 and the stopwatch's low 16 bits
+; (TIME_STUDY): three ROM3 reads, with the interrupts masked so that no other
+; report (the VBL's) falls between them. Clobbers D0, D1, A1.
+study_report:
+    move.w  sr, -(sp)
+    ori.w   #$0700, sr
+    move.w  UFW_SW_WRAPS, d1
+    moveq   #0, d0
+    move.b  MFP_TADR.w, d0
+    neg.b   d0                            ; ticks into this wrap
+    btst    #5, MFP_IPRA.w                ; a wrap not counted yet?
+    beq.s   .sr_ok
+    tst.b   d0
+    bmi.s   .sr_ok                        ; it came after the read
+    addq.w  #1, d1
+.sr_ok:
+    lsl.w   #8, d1
+    or.w    d1, d0
+    lea     STUDY_POINT_WINDOW, a1
+    tst.b   (a1, d2.w)
+    move.w  d0, d1
+    lsr.w   #8, d1
+    lea     STUDY_HI_WINDOW, a1
+    tst.b   (a1, d1.w)
+    and.w   #$FF, d0
+    lea     STUDY_LO_WINDOW, a1
+    tst.b   (a1, d0.w)
+    move.w  (sp)+, sr
+    rts
+    endc
 
 ; -------------------------------------------------------------------
 ; userfw_reset_stub -- copied to UFW_RESET_STUB and run there by

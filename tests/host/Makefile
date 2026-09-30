@@ -22,6 +22,9 @@ CFLAGS := -std=c11 -g -O1 -Wall -Wextra -Werror -Wno-unknown-pragmas \
 LDFLAGS := -fsanitize=address,undefined -pthread
 
 C_TESTS := $(patsubst %.c,$(BUILD)/%,$(wildcard test_*.c))
+# Tests that also run with the 25 fps profile (rp/src/include/profile.h).
+PROFILE_TESTS := test_audio_dma
+C_TESTS += $(patsubst %,$(BUILD)/%-25fps,$(PROFILE_TESTS))
 
 .PHONY: test c-tests py-tests clean FORCE
 
@@ -39,6 +42,10 @@ py-tests:
 # older than the firmware source it checks.
 $(BUILD)/%: %.c FORCE | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $< \
+	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
+
+$(BUILD)/%-25fps: %.c FORCE | $(BUILD)
+	$(CC) $(CFLAGS) -DAPP_PROFILE=PROFILE_25FPS -o $@ $< \
 	  $(addprefix $(REPO)/,$(shell sed -n '1s|^// units: ||p' $<)) $(LDFLAGS)
 
 $(BUILD):

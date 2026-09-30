@@ -17,6 +17,7 @@ Usage:
     python3 tools/dev/swd.py reset
     python3 tools/dev/swd.py counters [--elf ELF] [--watch SECONDS]
     python3 tools/dev/swd.py ikbd-log OUT [--seconds S] [--elf ELF]
+    python3 tools/dev/swd.py stopwatch [--seconds S] [--elf ELF]
     python3 tools/dev/swd.py heap [--elf ELF] [--watch SECONDS] [--csv FILE]
     python3 tools/dev/swd.py select short|long|release [--hold-ms MS] [--force]
     python3 tools/dev/swd.py key KEY... [--press | --release] [--elf ELF]
@@ -74,6 +75,13 @@ the difference. `app` sends a command named by a DEVHOOKS_APP_<NAME> define in
 rp/src/include, with optional 16-bit words: the demo dispatcher has `demo N`,
 `menu`, `overlay 0|1`, `slow_frame MS`, `input_mode 0-3`, `ikbd_cmd BYTE...`,
 `audio_out 0|1`, `tone HZ` and `copy_mode 0-2 [PIECE]` (demo.h).
+
+`stopwatch` (debug builds, with TIME_STUDY = 1 in userfw.s) reads the ST's
+stopwatch points for a few seconds: the VBL's period, when the loop wakes, when
+a frame's copy starts and ends and when the loop goes idle, each after its
+VBL, the copy's length, and the frames a second, in microseconds (min,
+median, 95th percentile, max, mean). The ST reports 4.07 us ticks of MFP
+Timer-A on one timeline, so a copy that runs across a VBL is measured whole.
 
 `fb` writes the framebuffer as the ST shows it, in colour, as a PNG: it waits
 for the next complete frame (a watchpoint on the frame counter stops core 0
@@ -828,6 +836,87 @@ def heap_line(snap: dict) -> str:
     return line
 
 
+STOPWATCH_TICK_US = 10 / 2.4576  # MFP Timer-A /10 (userfw.s TIME_STUDY)
+STOPWATCH_POINTS = {0: "wake", 1: "copy", 2: "copied", 3: "idle", 4: "VBL"}
+
+
+def cmd_stopwatch(args: argparse.Namespace) -> int:
+    """The ST's stopwatch points (userfw.s TIME_STUDY), read while it runs."""
+    elf = matching_elf(args.elf)
+    sym = elf_symbols(elf, "fbStopwatch", "fbStopwatchCount")
+    if len(sym) < 2:
+        raise SwdError(f"{os.path.basename(elf)} has no stopwatch (a debug build?)")
+    ring, ring_bytes = sym["fbStopwatch"]
+    count_addr, n = sym["fbStopwatchCount"][0], ring_bytes // 4
+
+    def snapshot() -> tuple[int, bytes]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "ring.bin")
+            out = openocd(f"targets {CORES[0]}", f"mdw 0x{count_addr:08x}",
+                          f"dump_image {path} 0x{ring:08x} {ring_bytes}")
+            m = re.search(rf"0x{count_addr:08x}:\s+([0-9a-fA-F]{{8}})", out)
+            if not m:
+                raise SwdError("cannot read fbStopwatchCount")
+            with open(path, "rb") as f:
+                return int(m.group(1), 16), f.read()
+
+    seen, _ = snapshot()
+    points, lost, started = [], 0, time.time()
+    while time.time() - started < args.seconds:
+        count, data = snapshot()
+        top = count - 1  # the newest may be half-written
+        first = max(seen, top - n + 1)
+        lost += first - seen
+        points += [struct.unpack_from("<I", data, (i % n) * 4)[0] for i in range(first, top)]
+        seen = max(seen, top)
+    elapsed = time.time() - started
+    if not points:
+        print("no stopwatch points: is userfw built with TIME_STUDY = 1?")
+        return 3
+    # One timeline: the ST reports the low 16 bits of its ticks.
+    timeline, last, base = [], None, 0
+    for r in points:
+        point, ticks = r >> 16, r & 0xFFFF
+        if last is not None and ticks < last:
+            base += 0x10000
+        last = ticks
+        timeline.append((point, (base + ticks) * STOPWATCH_TICK_US))
+    after_vbl, periods, copies = {}, [], []
+    vbl = start = None
+    for point, us in timeline:
+        if point == 4:
+            if vbl is not None:
+                periods.append(us - vbl)
+            vbl = us
+            continue
+        if vbl is not None:
+            after_vbl.setdefault(point, []).append(us - vbl)
+        if point == 1:
+            start = us
+        elif point == 2 and start is not None:
+            copies.append(us - start)
+            start = None
+
+    def row(name: str, values: list[float]) -> str:
+        v = sorted(values)
+        cells = (v[0], v[len(v) // 2], v[min(len(v) - 1, int(0.95 * len(v)))], v[-1],
+                 sum(v) / len(v))
+        return f"  {name:<14}" + "".join(f"{c:9.1f}" for c in cells)
+
+    print(f"{len(points)} points in {elapsed:.1f} s ({lost} not read); microseconds")
+    print(f"  {'':<14}{'min':>9}{'median':>9}{'p95':>9}{'max':>9}{'mean':>9}")
+    if periods:
+        print(row("VBL period", periods))
+    for p in sorted(after_vbl):
+        print(row(f"{STOPWATCH_POINTS.get(p, p)} @VBL+", after_vbl[p]))
+    if copies:
+        print(row("copy", copies))
+    frames = len(after_vbl.get(1, []))
+    vbls = len(periods) + 1
+    print(f"  {frames} frames in {vbls} VBLs: {50.0 * frames / max(vbls, 1):.1f} fps at 50 Hz")
+    return 0
+
+
 def cmd_counters(args: argparse.Namespace) -> int:
     """The firmware's counters, read while the RP runs."""
     elf = matching_elf(args.elf)
@@ -1276,6 +1365,12 @@ def build_parser() -> argparse.ArgumentParser:
     il.add_argument("--seconds", type=float, default=60.0)
     il.add_argument("--elf")
     il.set_defaults(func=cmd_ikbd_log)
+
+    sw = sub.add_parser("stopwatch", help="the ST's stopwatch points "
+                        "(debug builds, TIME_STUDY)")
+    sw.add_argument("--seconds", type=float, default=4.0)
+    sw.add_argument("--elf")
+    sw.set_defaults(func=cmd_stopwatch)
 
     fbp = sub.add_parser("fb", help="grab the framebuffer as a PNG")
     fbp.add_argument("out")

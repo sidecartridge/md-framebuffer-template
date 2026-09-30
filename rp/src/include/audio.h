@@ -47,6 +47,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "profile.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -68,7 +70,7 @@ void audio_init(void);
 /* The DMA chip's rate, and the signed 8-bit sample callback: write exactly
  * `samples` samples into `buf` (the library asks for a few dozen at a
  * time). Called from audio_render_frame(), as for audio_fill_cb_t. */
-#define AUDIO_DMA_RATE_HZ 12517u
+#define AUDIO_DMA_RATE_HZ PROFILE_DMA_RATE_HZ /* 12,517, or 25,033 Hz at 25 fps */
 typedef void (*audio_pcm_cb_t)(int8_t *buf, uint32_t samples);
 
 /* Install a PCM source at `rate_hz` (AUDIO_DMA_RATE_HZ plays unchanged on
