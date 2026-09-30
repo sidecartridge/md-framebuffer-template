@@ -22,7 +22,6 @@
 
 #include "aconfig.h"
 #include "audio.h"
-#include "audio_sample.h"
 #include "commemul.h"
 #include "debug.h"
 #include "demo.h"
@@ -137,17 +136,6 @@ void emul_start() {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
   }
 
-  // Audio source selection. Try to stream a
-  // .YMS file from the app folder first; on any failure (no SD,
-  // file missing, bad header, rate mismatch) fall back to the
-  // baked-in Ghostbusters G1 jingle so the demo still has audio.
-  // Apps swap their own audio_play_yms_file path or replace this
-  // block with audio_set_fill_callback() / audio_play_loop().
-  if (audio_play_yms_file("DEMO.YMS") < 0) {
-    audio_play_loop(audio_sample_data,
-                    (uint32_t)sizeof(audio_sample_data));
-  }
-
   // Cartridge SELECT button, configured in main() (held at power-on it goes
   // to Booster). While the app runs, as md-microfirmware-template: a short
   // press restarts the RP, a press held 10 s is a factory reset (the global
@@ -159,8 +147,11 @@ void emul_start() {
   // Bring up the demo dispatcher. demo_dispatcher_init takes
   // ownership of the ESC key from ikbd.c (ESC now means "back to
   // menu" inside a demo and "exit to GEM" only when the menu is on
-  // screen). The first dispatcher render paints the boot menu over
-  // whatever fb_init left in the framebuffer.
+  // screen) and starts the menu's music (demo_menu_music(): DEMO.YMS
+  // from the SD card, else the built-in jingle; apps play their own with
+  // audio_play_yms_file(), audio_play_loop(), audio_set_pcm_callback()).
+  // The first dispatcher render paints the boot menu over whatever
+  // fb_init left in the framebuffer.
   demo_dispatcher_init();
   // Debug builds: host commands over SWD (devhooks.h, tools/dev/swd.py).
   devhooks_setAppHandler(demo_dispatcher_devhook);
