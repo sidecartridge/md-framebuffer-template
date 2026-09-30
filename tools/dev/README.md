@@ -19,8 +19,15 @@ Python tools use the standard library only.
   `ikbdPowerUps` (ikbd.c), `commOverruns` (commemul.c), and `audioSlicesWritten`,
   `audioLateSlices`, `audioUnderruns` and `audioOutput` (audio.c), and `stSessionFeatures`
   (st_session.c: 1 when the ST has a blitter). Debug builds also keep `ikbdLog` /
-  `ikbdLogCount` (ikbd.c, for `ikbd-log`) and, when `userfw.s` reports it, the blit slack
-  (`fbSlackHist`, `fbSlackMinUs`, `fbSlackLate` in fb.c).
+  `ikbdLogCount` (ikbd.c, for `ikbd-log`) and, when `userfw.s` is built with `TIME_STUDY = 1`,
+  the ST's stopwatch points (`fbStopwatch`, `fbStopwatchCount`, for `stopwatch`) and the slack
+  of each frame's copy before the VBL that may start the next (`fbSlackHist`, `fbSlackMinUs`,
+  `fbSlackLate` in fb.c).
+- `stopwatch [--seconds S]` (debug builds, `TIME_STUDY = 1` in `userfw.s`): the VBL's period,
+  when the ST's loop wakes, starts and ends a frame's copy and goes idle, each after its VBL,
+  the copy's length and the frames a second, in microseconds (4.07 µs ticks of MFP Timer-A on
+  one timeline). A 25 fps build (`APP_PROFILE=PROFILE_25FPS tools/dev/flash.sh debug`) builds in
+  its own folder and its ID ends in `+25fps`.
 - Debug builds carry the devhooks mailbox (`rp/src/include/devhooks.h`, included once from
   `emul.c`, served by `devhooks_poll()` in the main loop), which `key` and `app` write.
 
@@ -179,7 +186,7 @@ runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo 
   `DEMO.YMS`.
 - `copy_mode MODE [PIECE]`: who copies the frame on the ST, from its next VBL (0 auto: the
   blitter on the DMA sound path; 1 the CPU; 2 the blitter), and the blitter's chunks per piece
-  (0: 40). With `FB_SLACK_REPORT` on, the slack histogram shows what each one leaves.
+  (0: 40). With the stopwatch on, the slack histogram shows what each one leaves.
 
 An app adds its own the same way: a `DEVHOOKS_APP_<NAME>` define and a handler set with
 `devhooks_setAppHandler()`.

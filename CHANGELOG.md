@@ -14,18 +14,31 @@
   (`AUDIO_FIFO_SLICES`). When nothing is ready the last sample is held, never stale
   sound, and `audioUnderruns` counts it.
 
+### Two profiles: 50 fps, or 25 fps with rich sound
+
+- Apps choose at compile time between 50 frames a second with the sound as before (the YM at
+  5,585 Hz, the DMA chip at 12,517 Hz), the default, and 25 frames a second with four times the
+  YM's rate and twice the DMA chip's (21,943 Hz and 25,033 Hz): `APP_PROFILE=PROFILE_25FPS` when
+  building (`rp/src/include/profile.h`). Story games with rich sound get the second; the ST
+  keeps about 5 ms of each 25 fps frame free on a plain ST, and a mouse moved fast costs no
+  frame there. The ST code is the same for both; `fb_publish()` paces the app at the profile's
+  rate, and `.YMS` files and the built-in jingle keep their 5,585 Hz (the RP resamples them).
+- The audio buffer in the cartridge window grows to 4 KB, the DMA ring in the ST's RAM to 4 KB
+  (`$6F000`): `APP_FREE` starts at `$FA5180` (about 12.4 KB).
+- The ST's stopwatch (`TIME_STUDY` in `userfw.s`, off by default) replaces the slack report:
+  MFP Timer-A at 4 µs a tick, reported at points of the ST's loop on one timeline;
+  `tools/dev/swd.py stopwatch` prints them.
+
 ### STE DMA sound
 
 - On an STE or a Mega STE the sound plays through the DMA sound chip: 8-bit at 12,517 Hz, no
-  interrupt per sample. The ST copies each VBL's samples into a 2 KB ring in its RAM (below the
+  interrupt per sample. The ST copies each VBL's samples into a ring in its RAM (below the
   screen pages); Timer-B stays off, which gives the ST 1.6 ms of every frame back: a mouse moved
   fast no longer costs frames there. A plain ST or Mega ST plays through the YM as before, from
   the same firmware.
 - Apps give 8-bit PCM at any rate (`audio_play_pcm_loop()`, `audio_set_pcm_callback()`) or YM
   pairs as before; either plays on both outputs, converted on the RP. `audio_prefer_ym()` keeps
   an STE on the YM; `tools/wav_to_ym4.py --mode pcm` writes PCM headers.
-- The audio buffer in the cartridge window grows to 2 KB: `APP_FREE` starts at `$FA4980`
-  (about 14.4 KB).
 
 ### Games
 
@@ -47,9 +60,7 @@
   ST, a Mega ST fitted with a blitter) the 68000 still copies: the blitter holds the CPU off,
   and the YM's samples come late and sound rough. `fb_set_copy_mode()` picks either; the
   blitter on a Mega ST gives an app without sound about 3 ms more.
-- `FB_SLACK_REPORT` now measures with MFP Timer-A, on both sound paths, and reports one byte
-  (`$FB8Bxx`, in 81 µs steps). The ST reports whether it has a blitter
-  (`st_session_features()`).
+- The ST reports whether it has a blitter (`st_session_features()`).
 
 ### Mouse and joysticks
 
@@ -68,7 +79,7 @@
   counters of the input path.
 - Every IKBD byte costs the ST an interrupt. With the full-screen blit and the sound, a mouse
   moved fast makes the frame rate dip to 30-40 a second; the sound stays clean.
-  `FB_SLACK_REPORT` in `userfw.s` measures how much of each frame the ST has left.
+  The ST's stopwatch (`TIME_STUDY` in `userfw.s`) measures how much of each frame the ST has left.
 - The release of keypad Enter is no longer dropped.
 
 ### For developers
