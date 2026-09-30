@@ -85,6 +85,7 @@ extern bool g_show_timing;
 #define DEVHOOKS_APP_IKBD_CMD 6   /* WORD...: IKBD command bytes to send */
 #define DEVHOOKS_APP_AUDIO_OUT 7  /* WORD 0 the DMA chip if any, 1 the YM: next boot */
 #define DEVHOOKS_APP_TONE 8       /* WORD Hz: a sine through the PCM path; 0: DEMO.YMS */
+#define DEVHOOKS_APP_COPY_MODE 9  /* WORD mode 0..2, WORD piece: fb_set_copy_mode() */
 uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
                                  uint16_t payloadSize);
 

@@ -73,7 +73,7 @@ released, and the bytes enter where the ST's own do, so the app cannot tell
 the difference. `app` sends a command named by a DEVHOOKS_APP_<NAME> define in
 rp/src/include, with optional 16-bit words: the demo dispatcher has `demo N`,
 `menu`, `overlay 0|1`, `slow_frame MS`, `input_mode 0-3`, `ikbd_cmd BYTE...`,
-`audio_out 0|1` and `tone HZ` (demo.h).
+`audio_out 0|1`, `tone HZ` and `copy_mode 0-2 [PIECE]` (demo.h).
 
 `fb` writes the framebuffer as the ST shows it, in colour, as a PNG: it waits
 for the next complete frame (a watchpoint on the frame counter stops core 0
@@ -151,7 +151,8 @@ COUNTERS = (("stSessionHellos", "ST hellos"),
             ("audioSlicesWritten", "audio slices written"),
             ("audioLateSlices", "audio slices late"),
             ("audioUnderruns", "audio underruns"),
-            ("audioOutput", "audio output (1 YM, 2 DMA)"))
+            ("audioOutput", "audio output (1 YM, 2 DMA)"),
+            ("stSessionFeatures", "ST features (1 blitter)"))
 # Counters that --watch also prints as a rate.
 RATE_COUNTERS = ("fb_frame_tick", "s_vbl_seen", "audioSlicesWritten", "ikbdBytes")
 # Variables postmortem prints when the ELF has them; a build without one

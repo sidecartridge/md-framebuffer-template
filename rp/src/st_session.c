@@ -17,8 +17,10 @@ static uint8_t s_tos_lo;
 static uint8_t s_machine;
 static uint16_t s_tos_version;
 static bool s_boot_pending;
-/* Hellos seen since the RP started; readable over SWD by its symbol. */
+/* Hellos seen since the RP started, and the features the ST reported after
+ * the last one; readable over SWD by their symbols. */
 uint32_t stSessionHellos = 0;
+uint32_t stSessionFeatures = 0;
 
 void st_session_consume_rom3_sample(uint16_t sample) {
   uint8_t value = (uint8_t)(sample & 0xFFu);
@@ -37,11 +39,16 @@ void st_session_consume_rom3_sample(uint16_t sample) {
           cart_asM68kLong(CART_CMD_NOP);
       s_machine = value;
       s_tos_version = (uint16_t)((s_tos_hi << 8) | s_tos_lo);
+      stSessionFeatures = 0;
       s_boot_pending = true;
       stSessionHellos++;
       DPRINTF("ST hello #%lu: machine 0x%02X, TOS %X.%02X\n",
               (unsigned long)stSessionHellos, (unsigned)s_machine,
               (unsigned)s_tos_hi, (unsigned)s_tos_lo);
+      break;
+    case CART_ROM3_ST_FEATURES_WINDOW:
+      stSessionFeatures = value;
+      DPRINTF("ST features 0x%02X\n", (unsigned)value);
       break;
     default:
       break;
@@ -59,6 +66,8 @@ uint8_t st_session_machine(void) { return s_machine; }
 uint32_t st_session_hellos(void) { return stSessionHellos; }
 
 uint16_t st_session_tos_version(void) { return s_tos_version; }
+
+uint8_t st_session_features(void) { return (uint8_t)stSessionFeatures; }
 
 void st_session_veto_boot(const char *reason) {
   volatile uint8_t *message =

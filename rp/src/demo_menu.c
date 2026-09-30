@@ -508,6 +508,14 @@ uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
       s_tone_step = (uint32_t)(((uint64_t)arg << 32) / AUDIO_DMA_RATE_HZ);
       audio_set_pcm_callback(tone_cb, AUDIO_DMA_RATE_HZ);
       return 1;
+    case DEVHOOKS_APP_COPY_MODE: {
+      uint16_t piece = payloadSize >= 4u ? payload[1] : 0u;
+      if (arg > CART_BLIT_MODE_BLITTER || piece > 255u) return 0;
+      DPRINTF("dispatcher: host -> copy mode %u, piece %u\n", (unsigned)arg,
+              (unsigned)piece);
+      fb_set_copy_mode((uint8_t)arg, (uint8_t)piece);
+      return 1;
+    }
     case DEVHOOKS_APP_IKBD_CMD: {
       uint8_t cmd[CART_IKBD_OUT_MAX];
       size_t n = payloadSize / 2u;

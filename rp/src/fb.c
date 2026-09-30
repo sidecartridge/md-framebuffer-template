@@ -262,29 +262,22 @@ void fb_render_frame(void) {
  * bucket holds the rest), the smallest slack seen, and the blits that ended
  * after the next VBL (that frame waited a VBL more). */
 #define FB_SLACK_BUCKETS 40u
-#define FB_SLACK_BUCKET_US 50u
-/* A VBL of the PAL ST (32.084988 MHz / 4 / (512 x 313)), and a Timer-B count
- * in nanoseconds (2.4576 MHz / 4). */
+#define FB_SLACK_BUCKET_US 100u
+/* A VBL of the PAL ST (32.084988 MHz / 4 / (512 x 313)), and a Timer-A count
+ * in nanoseconds (2.4576 MHz / 200). */
 #define FB_VBL_PERIOD_US 19979u
-#define FB_TIMERB_COUNT_NS 1628u
+#define FB_TIMERA_COUNT_NS 81380u
 volatile uint32_t fbSlackHist[FB_SLACK_BUCKETS];
 volatile uint32_t fbSlackMinUs = UINT32_MAX;
 volatile uint32_t fbSlackLate = 0;
 volatile uint32_t fbSlackReports = 0;
-static int s_slack_high = -1;
 
 static void fb_slack_sample(uint16_t sample) {
-  uint16_t window = sample & CART_ROM3_WINDOW_MASK;
-  if (window == CART_ROM3_FB_SLACK_HI_WINDOW) {
-    s_slack_high = sample & 0xFF;
-    return;
-  }
-  if (window != CART_ROM3_FB_SLACK_LO_WINDOW || s_slack_high < 0) return;
-  uint32_t counts = ((uint32_t)s_slack_high << 8) | (sample & 0xFFu);
-  s_slack_high = -1;
+  if ((sample & CART_ROM3_WINDOW_MASK) != CART_ROM3_FB_SLACK_WINDOW) return;
+  uint32_t counts = sample & 0xFFu;
   fbSlackReports++;
-  uint32_t ended_us = counts * FB_TIMERB_COUNT_NS / 1000u;
-  if (counts == 0xFFFFu || ended_us >= FB_VBL_PERIOD_US) {
+  uint32_t ended_us = counts * FB_TIMERA_COUNT_NS / 1000u;
+  if (counts == 0xFFu || ended_us >= FB_VBL_PERIOD_US) {
     fbSlackLate++;
     return;
   }
@@ -311,6 +304,12 @@ static void fb_rom3_dispatch(uint16_t sample) {
 }
 
 void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }
+
+void fb_set_copy_mode(uint8_t mode, uint8_t piece) {
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_BLIT_MODE_OFFSET)) =
+      (uint16_t)(mode | (piece << 8));
+}
 
 void fb_publish(void) {
   /* 1. Transpose chunked -> planar SCRATCH (RP RAM, dual-core). This is
