@@ -74,6 +74,14 @@ BLIT_MARK_DONE        equ $070               ; green: FBDRV_INLINE returned
 ; 1 when measuring.
 FBDRV_DEBUG_MARKS     equ 0
 
+; FB_SLACK_REPORT = 1 tells the RP, after every blit, how long after the VBL
+; the blit ended: Timer-B counts (1.63 us each) since userfw_vbl, as two
+; ROM3 reads (FB_SLACK_HI_WINDOW, FB_SLACK_LO_WINDOW), $FFFF when the next
+; VBL came first. Debug builds of the RP keep a histogram of the slack left
+; before the VBL (fb.c). The report itself costs about 30 us after each
+; blit: keep it 0 unless measuring.
+FB_SLACK_REPORT       equ 0
+
 ; Per-VBL state area at the end of SCREEN_A's 32 KB allocation.
 ; Used by FBDRV_INLINE to spill A7 (SP) around the MOVEM-burst that
 ; includes A7 in its register list; the current-page pointer
@@ -105,6 +113,12 @@ UFW_IKBD_OUT_GEN      equ $00077FF6          ; word
 UFW_IKBD_OUT_STEP     equ $00077FF8          ; word
 ; IKBD bytes userfw_acia_irq has read; userfw_vbl reports its low byte.
 UFW_IKBD_COUNT        equ $00077FFA          ; word
+; Timer-B's count and the MFP's pending bits at the VBL (FB_SLACK_REPORT).
+UFW_SLACK_TBDR        equ $00077FFC          ; byte
+UFW_SLACK_IPRA        equ $00077FFD          ; byte
+; The audio slice when the blit started: another one at its end means the
+; next VBL came first (FB_SLACK_REPORT).
+UFW_SLACK_SLICE       equ $00077FFE          ; word
 
 ; fbdrv iteration arithmetic. Pulled out as equs so the macro body
 ; below doesn't carry literal magic numbers. FBDRV_TOTAL_BYTES is
@@ -303,6 +317,7 @@ IKBD_SEND             macro
 ; MC68901 MFP registers (subset we manipulate).
 MFP_IERA              equ $FFFFFA07          ; interrupt enable A (Timer-A = bit 5)
 MFP_IERB              equ $FFFFFA09          ; interrupt enable B
+MFP_IPRA              equ $FFFFFA0B          ; interrupt pending A (Timer-B = bit 0)
 MFP_ISRA              equ $FFFFFA0F          ; in-service A (Timer-A ack = bit 5)
 MFP_IMRA              equ $FFFFFA13          ; interrupt mask A
 MFP_IMRB              equ $FFFFFA15          ; interrupt mask B
@@ -677,6 +692,9 @@ userfw:
     cmp.w   UFW_LAST_FRAME, d0
     beq     .input_check
     move.w  d0, UFW_LAST_FRAME
+    ifne    FB_SLACK_REPORT
+    move.w  UFW_AUDIO_SLICE, UFW_SLACK_SLICE
+    endc
 
     ; A5 = END of the screen page chunk-covered region. FBDRV_INLINE
     ; uses predec MOVEM (`movem.l list, -(a5)`) and walks A5 backwards
@@ -731,6 +749,46 @@ userfw:
     ; commemul ring captures the read; fb_publish() on the RP blocks
     ; until it sees this before running the next chunky-to-planar.
     tst.b   VBLSYNC_ADDR
+
+    ifne    FB_SLACK_REPORT
+    ; How long after the VBL the blit ended (see FB_SLACK_REPORT). Timer-B
+    ; fires served since the VBL: A0's offset in its slice, 2 bytes each.
+    ; counts = TBDR at the VBL - TBDR now + TIMERB_COUNT * fires, where a
+    ; fire pending at the VBL is not one of them and one pending now is.
+    move.w  #$2700, sr
+    move.w  a0, d0
+    moveq   #0, d1
+    move.b  MFP_TBDR.w, d1
+    move.b  MFP_IPRA.w, d2
+    move.w  UFW_AUDIO_SLICE, d3
+    move.w  #$2300, sr
+    move.w  #$FFFF, d4
+    cmp.w   UFW_SLACK_SLICE, d3           ; another slice: the next VBL came
+    bne.s   .slack_report
+    and.w   #$FF, d0
+    lsr.w   #1, d0
+    btst    #0, d2
+    beq.s   .slack_now
+    addq.w  #1, d0
+.slack_now:
+    btst    #0, UFW_SLACK_IPRA
+    beq.s   .slack_vbl
+    subq.w  #1, d0
+.slack_vbl:
+    mulu    #TIMERB_COUNT, d0
+    moveq   #0, d4
+    move.b  UFW_SLACK_TBDR, d4
+    add.w   d0, d4
+    sub.w   d1, d4
+.slack_report:
+    move.w  d4, d0
+    lsr.w   #8, d0
+    lea     FB_SLACK_HI_WINDOW, a1
+    tst.b   (a1, d0.w)
+    and.w   #$FF, d4
+    lea     FB_SLACK_LO_WINDOW, a1
+    tst.b   (a1, d4.w)
+    endc
 
 .input_check:
     ; IKBD commands from the RP (IKBD_OUT_ADDR): when their generation
@@ -885,6 +943,10 @@ userfw_vbl:
     ; userfw_acia_irq cannot run in the middle of the count report either,
     ; so every byte it counted was forwarded before the report.
     move.w  #$2700, sr
+    ifne    FB_SLACK_REPORT
+    move.b  MFP_IPRA.w, UFW_SLACK_IPRA
+    move.b  MFP_TBDR.w, UFW_SLACK_TBDR
+    endc
     move.l  d0, -(sp)
     moveq   #0, d0
     move.b  UFW_IKBD_COUNT+1, d0

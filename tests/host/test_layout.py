@@ -198,6 +198,10 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_TOS_HI_WINDOW"]),
     ("TOS low byte window", lambda st: rom3(st, "ST_TOS_LO_WINDOW"),
      lambda rp: rp["CART_ROM3_TOS_LO_WINDOW"]),
+    ("blit slack high byte window", lambda st: rom3(st, "FB_SLACK_HI_WINDOW"),
+     lambda rp: rp["CART_ROM3_FB_SLACK_HI_WINDOW"]),
+    ("blit slack low byte window", lambda st: rom3(st, "FB_SLACK_LO_WINDOW"),
+     lambda rp: rp["CART_ROM3_FB_SLACK_LO_WINDOW"]),
     # The sample rate: Timer-B plays what the RP converts at its rate.
     ("audio sample rate (Hz)", lambda st: round(
         MFP_CLOCK_HZ / (MFP_PRESCALER[st["TIMERB_PRESCALER"]] * st["TIMERB_COUNT"])),

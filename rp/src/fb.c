@@ -255,14 +255,59 @@ void fb_render_frame(void) {
   last_frame_us = time_us_32() - t_frame_start;
 }
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/* The ST's slack after each blit, when userfw.s reports it
+ * (FB_SLACK_REPORT): the blit ended this long before the next VBL.
+ * Readable over SWD: a histogram in FB_SLACK_BUCKET_US steps (the last
+ * bucket holds the rest), the smallest slack seen, and the blits that ended
+ * after the next VBL (that frame waited a VBL more). */
+#define FB_SLACK_BUCKETS 40u
+#define FB_SLACK_BUCKET_US 50u
+/* A VBL of the PAL ST (32.084988 MHz / 4 / (512 x 313)), and a Timer-B count
+ * in nanoseconds (2.4576 MHz / 4). */
+#define FB_VBL_PERIOD_US 19979u
+#define FB_TIMERB_COUNT_NS 1628u
+volatile uint32_t fbSlackHist[FB_SLACK_BUCKETS];
+volatile uint32_t fbSlackMinUs = UINT32_MAX;
+volatile uint32_t fbSlackLate = 0;
+volatile uint32_t fbSlackReports = 0;
+static int s_slack_high = -1;
+
+static void fb_slack_sample(uint16_t sample) {
+  uint16_t window = sample & CART_ROM3_WINDOW_MASK;
+  if (window == CART_ROM3_FB_SLACK_HI_WINDOW) {
+    s_slack_high = sample & 0xFF;
+    return;
+  }
+  if (window != CART_ROM3_FB_SLACK_LO_WINDOW || s_slack_high < 0) return;
+  uint32_t counts = ((uint32_t)s_slack_high << 8) | (sample & 0xFFu);
+  s_slack_high = -1;
+  fbSlackReports++;
+  uint32_t ended_us = counts * FB_TIMERB_COUNT_NS / 1000u;
+  if (counts == 0xFFFFu || ended_us >= FB_VBL_PERIOD_US) {
+    fbSlackLate++;
+    return;
+  }
+  uint32_t slack_us = FB_VBL_PERIOD_US - ended_us;
+  if (slack_us < fbSlackMinUs) fbSlackMinUs = slack_us;
+  uint32_t bucket = slack_us / FB_SLACK_BUCKET_US;
+  if (bucket >= FB_SLACK_BUCKETS) bucket = FB_SLACK_BUCKETS - 1u;
+  fbSlackHist[bucket]++;
+}
+#else
+#define fb_slack_sample(sample) ((void)0)
+#endif
+
 /* ROM3 ring dispatch: route each captured cart-bus read to the IKBD
- * demux, the ST's hello and the VBL frame-sync detector. */
+ * demux, the ST's hello, the VBL frame-sync detector and (debug builds) the
+ * blit slack report. */
 static void fb_rom3_dispatch(uint16_t sample) {
   ikbd_consume_rom3_sample(sample);
   st_session_consume_rom3_sample(sample);
   if ((sample & FB_VBLSYNC_HIMASK) == FB_VBLSYNC_HIBYTE) {
     s_vbl_seen++;
   }
+  fb_slack_sample(sample);
 }
 
 void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }

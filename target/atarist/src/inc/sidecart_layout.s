@@ -105,3 +105,5 @@ IKBD_OUT_WINDOW         equ (ROMCMD_START_ADDR + $8700)  ; + low byte of the IKB
 ST_HELLO_WINDOW         equ (ROMCMD_START_ADDR + $8800)  ; + the machine: hello, a new session
 ST_TOS_HI_WINDOW        equ (ROMCMD_START_ADDR + $8900)  ; + TOS version, high byte
 ST_TOS_LO_WINDOW        equ (ROMCMD_START_ADDR + $8A00)  ; + TOS version, low byte
+FB_SLACK_HI_WINDOW      equ (ROMCMD_START_ADDR + $8B00)  ; + when the blit ended, high byte (FB_SLACK_REPORT)
+FB_SLACK_LO_WINDOW      equ (ROMCMD_START_ADDR + $8C00)  ; + when the blit ended, low byte

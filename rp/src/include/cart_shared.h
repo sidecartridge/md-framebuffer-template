@@ -218,7 +218,10 @@
  *   $FB87xx  the ST sent the IKBD commands of generation xx (low byte)
  *   $FB88xx  hello: a new ST session starts; xx is the machine (st_session.h)
  *   $FB89xx  TOS version, high byte; sent just before the hello
- *   $FB8Axx  TOS version, low byte; sent just before the hello */
+ *   $FB8Axx  TOS version, low byte; sent just before the hello
+ *   $FB8Bxx  when the blit ended, in Timer-B counts after the VBL, high byte
+ *            ($FFFF: after the next VBL); userfw.s FB_SLACK_REPORT (fb.c)
+ *   $FB8Cxx  the same, low byte; sent just after the high byte */
 #define CART_ROM3_WINDOW_MASK        0xFF00u
 #define CART_ROM3_IKBD_COUNT_WINDOW  0x8300u
 #define CART_ROM3_BLIT_DONE_WINDOW   0x8400u
@@ -228,6 +231,8 @@
 #define CART_ROM3_HELLO_WINDOW       0x8800u
 #define CART_ROM3_TOS_HI_WINDOW      0x8900u
 #define CART_ROM3_TOS_LO_WINDOW      0x8A00u
+#define CART_ROM3_FB_SLACK_HI_WINDOW 0x8B00u
+#define CART_ROM3_FB_SLACK_LO_WINDOW 0x8C00u
 
 /* The cart bus byte-swaps WITHIN each 16-bit word: RP stores LE,
  * m68k reads BE, and the swap makes that transparent for uint16_t.
