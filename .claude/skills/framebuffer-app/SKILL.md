@@ -21,7 +21,8 @@ Multi-device microfirmware apps** for the Atari ST / STE / MegaST(E) —
 games, demos, and console/computer emulations where the speed of putting
 a colourful 320×200 screen up matters. You draw a 320×200 16-colour
 framebuffer in the Pico's RAM and the firmware blits it to the ST each
-VBL (50 Hz), with keyboard input and YM audio for free.
+VBL (50 Hz), with keyboard, mouse and joystick input and YM audio for
+free.
 
 **You develop 100% on the RP2040 side — the framework does the heavy
 lifting:** a dual (page-flipped) framebuffer on the Atari ST side
@@ -29,8 +30,12 @@ lifting:** a dual (page-flipped) framebuffer on the Atari ST side
 blank; **~19 ms of compute every VBL** to draw your frame; chunked
 drawing on the RP2040 (one byte per pixel) with the chunked → ST planar
 conversion done for you in **~1 ms per VBL** (split across both cores);
-**~6 kHz, 6-bit sampled sound** out the YM2149; and Atari ST keyboard
-handled on the RP2040 with decoded scancodes delivered to your app.
+sampled sound (8-bit 12.5 kHz through the DMA chip on an STE / Mega STE,
+~6 kHz 6-bit out the YM2149 elsewhere; or, with `APP_PROFILE=PROFILE_25FPS`
+at build time, 25 fps with 25 kHz / ~22 kHz sound: `rp/src/include/profile.h`);
+and the Atari ST
+keyboard, mouse and joysticks handled on the RP2040, delivered to your app
+as key events, mouse movement and stick states.
 
 ## The model (read this first)
 
@@ -43,7 +48,9 @@ double-buffering. `fb_publish()` blocks on the ST's VBL, so one call per
 loop paces the app to 50 Hz.
 
 `README.md` is the human guide; `CLAUDE.md` is the architecture
-deep-dive; `examples/hello_text/` is a minimal working app.
+deep-dive; `examples/hello_text/` is a minimal working app and
+`examples/mini_game/` a game (`rp/src/game_arena.c` for the joystick,
+`rp/src/game_zap.c` for the mouse, on `game_kit.c`).
 
 ## Starting a fresh app
 
@@ -51,7 +58,7 @@ deep-dive; `examples/hello_text/` is a minimal working app.
 backs up `rp/` to `rp.bak`, deletes the demo/menu files, and installs a
 minimal `emul.c` + `CMakeLists.txt`. The manual steps:
 
-1. **Delete the demos**: `rp/src/demo_*.c` (5 files), `rp/src/include/demo.h`,
+1. **Delete the demos**: `rp/src/demo_*.c` (7 files), `rp/src/include/demo.h`,
    and the asset headers (`sidecart_logo.h`, `sidecart_text.h`,
    `solid3d.h`, `sprites_data.h`, `cojo_texture.h`, `cojo_font.h`,
    `diego_sprite.h`, `uridium_surface.h`).
@@ -65,7 +72,11 @@ minimal `emul.c` + `CMakeLists.txt`. The manual steps:
 4. **`desc/app.json`**: set your `uuid` (must match the UUID passed to
    `build.sh`).
 
-`examples/hello_text/emul.c` is a ready-made stripped `emul.c` to copy.
+`examples/hello_text/emul.c` is a ready-made stripped `emul.c` to copy;
+`examples/mini_game/emul.c` boots into a game instead. For a game's sprites
+and tiles, draw indexed PNGs (16 colours, one transparent) and convert them
+with `tools/png_to_bitmap.py` (`FB_BITMAP`s + the palette for
+`palette_set()`), as `rp/src/assets/convert.sh` does.
 
 ## The API (keep these modules; they are your API)
 
@@ -87,10 +98,19 @@ palette_set_entry(2, PALETTE_RGB(7, 0, 0));    // or palette_set(entries[16])
 fb_publish();                                  // once per frame, after drawing
 // input: ikbd.h
 ikbd_key_event_t k; while (ikbd_pop_key(&k)) { if (k.is_press) ... }  // k.scancode
+ikbd_set_input_mode(IKBD_INPUT_MOUSE);         // or _KEYBOARD (default), _MOUSE_JOY1,
+                                               // _JOYSTICKS; keys work in every mode
+ikbd_mouse_t m; ikbd_read_mouse(&m);           // once a frame: m.dx/dy since last read,
+                                               // m.buttons, m.pressed (clicks between reads)
+ikbd_joystick_t j; ikbd_read_joystick(1, &j);  // j.state / j.pressed: IKBD_JOY_UP..FIRE
 // audio: audio.h
 audio_play_loop(data, bytes);                  // loop a baked-in buffer, OR
-audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL, live
-audio_render_frame();                          // call every loop iteration
+audio_set_fill_callback(cb);                   // cb(buf,bytes) per VBL of samples, live
+audio_play_pcm_loop(pcm, n, rate);             // or signed 8-bit PCM at any rate
+audio_set_pcm_callback(cb, AUDIO_DMA_RATE_HZ);  // (either kind plays on both outputs)
+audio_render_frame();                          // every loop iteration: tops up the FIFO
+                                               // (80 ms of stall allowed; 120 ms latency
+                                               // on the YM, ~175 ms on the DMA chip)
 ```
 
 **SD card:** the microSD is already mounted at boot
@@ -109,6 +129,14 @@ recompiling): defaults live in `rp/src/aconfig.c` `defaultEntries[]` as
 `settings_put_string` / `_integer` / `_bool(aconfig_getContext(), "KEY",
 v)` then `settings_save(aconfig_getContext(), true)`. (This is how the SD
 folder name `ACONFIG_PARAM_FOLDER` is supplied.)
+
+**The ST's boot** (`st_session.h`): `st_session_consume_boot()` is true once
+per ST boot (restart your app's state). `st_session_veto_boot("reason")`
+makes the ST print the reason and go to GEM instead of starting the app
+(e.g. a file the app needs is missing); it must be set within about 0.3 s
+of a power-on to catch that boot, and holds until `st_session_allow_boot()`.
+`st_session_return_to_booster()` leaves for Booster without a power cycle
+(the ST cold-resets into it); call it from the main loop, never returns.
 
 Main loop shape (in `emul_start()`):
 
@@ -135,15 +163,25 @@ while (true) {
   The user usually runs the build themselves; only build the **Atari/m68k
   target** if you change `target/atarist/` asm. RP-only C changes don't
   need it.
-- **Optimization:** the global build is `MinSizeRel` (`-Os`). For hot
-  per-pixel loops add `#pragma GCC optimize("O3")` at the top of that
-  *compute-only* `.c` file and `__not_in_flash_func()` on the function —
-  never on bus/PIO/timing code. The demo sources are the reference for
+- **Optimization:** both build types are CMake `Release` (`-O3`). Hot
+  per-pixel loops also want `__not_in_flash_func()` on the function, and
+  the demos put `#pragma GCC optimize("O3")` at the top of their
+  *compute-only* `.c` files, which keeps them fast in a `MinSizeRel`
+  build (`RP_CMAKE_BUILD_TYPE`). The demo sources are the reference for
   the full toolbox (LUTs, the SIO interpolator, `fb_core1_dispatch`
   dual-core).
 - **Never** edit the `pico-sdk/`, `pico-extras/`, `fatfs-sdk/`
   submodules — the build re-pins them. Don't add features to `main.c`
   (use `emul.c`).
+- **Input modes:** port 0 is the mouse or joystick 0, never both — pick
+  the mode (`ikbd_set_input_mode()`); it survives an ST reset and a
+  keyboard replug. Stick 1's fire is the right mouse button's wire. Every
+  IKBD byte costs the ST an interrupt (30–40 µs) out of ~0.27 ms of slack
+  after the full-screen blit: a mouse moved fast drops some frames to
+  30–40 fps (accepted; blit fewer lines if an app must hold 50). On an
+  STE / Mega STE the DMA chip plays the sound and the blitter copies the
+  frame: no frames lost. `fb_set_copy_mode()` forces the CPU or the
+  blitter (the blitter on the YM path roughens the sound).
 - **Palette:** index 0 = white (text/border), 15 = black (background);
   `PALETTE_RGB(r,g,b)` channels are 0..7. Re-publishing the palette each
   frame is cheap (colour-cycling).

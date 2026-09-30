@@ -1,10 +1,13 @@
 #include "include/gconfig.h"
 
+// The global settings are Booster's: it writes them and this app only reads
+// them. These defaults show only for a key missing from flash, so they match
+// Booster's own (booster/src/gconfig.c in Booster v2.4.1), in the same order.
 static SettingsConfigEntry defaultEntries[] = {
     {PARAM_APPS_FOLDER, SETTINGS_TYPE_STRING, "/apps"},
     {PARAM_APPS_CATALOG_URL, SETTINGS_TYPE_STRING,
-     "http://atarist.sidecartridge.com/apps.json"},
-    {PARAM_BOOT_FEATURE, SETTINGS_TYPE_STRING, "CONFIGURATOR"},
+     "https://md-store.sidecartridge.com/atari-st/apps.json"},
+    {PARAM_BOOT_FEATURE, SETTINGS_TYPE_STRING, "FABRIC"},
     {PARAM_HOSTNAME, SETTINGS_TYPE_STRING, "sidecart"},
     {PARAM_SAFE_CONFIG_REBOOT, SETTINGS_TYPE_BOOL, "true"},
     {PARAM_SD_BAUD_RATE_KB, SETTINGS_TYPE_INT, "12500"},
@@ -18,7 +21,7 @@ static SettingsConfigEntry defaultEntries[] = {
     {PARAM_WIFI_MODE, SETTINGS_TYPE_INT, "0"},
     {PARAM_WIFI_NETMASK, SETTINGS_TYPE_STRING, ""},
     {PARAM_WIFI_PASSWORD, SETTINGS_TYPE_STRING, ""},
-    {PARAM_WIFI_POWER, SETTINGS_TYPE_INT, "0"},
+    {PARAM_WIFI_POWER, SETTINGS_TYPE_INT, "4"},
     {PARAM_WIFI_RSSI, SETTINGS_TYPE_BOOL, "true"},
     {PARAM_WIFI_SCAN_SECONDS, SETTINGS_TYPE_INT, "10"},
     {PARAM_WIFI_SSID, SETTINGS_TYPE_STRING, ""}};

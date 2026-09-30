@@ -43,13 +43,11 @@
 
 extern const struct FB_FONT font8x8;
 
-/* The global build is MinSizeRel (-Os), which leaves the per-pixel
- * rotozoom/scroller loops un-unrolled with weak register allocation --
- * the main reason the micro-opts above showed little gain. Force -O3
- * for this whole translation unit. It's safe to do here precisely
- * because this file is pure compute (texture sampling + framebuffer
- * writes) -- none of the timing-sensitive cart-bus / PIO code that a
- * global -O3 destabilised lives here. */
+/* -Os (a MinSizeRel build, which RP_CMAKE_BUILD_TYPE can still make)
+ * leaves the per-pixel rotozoom/scroller loops un-unrolled with weak
+ * register allocation -- the main reason the micro-opts above showed
+ * little gain there. Force -O3 for this whole translation unit,
+ * whatever the CMake build type. */
 #pragma GCC optimize("O3")
 
 /* The rotozoom uses INTERP0 as a hardware texel-address generator (see

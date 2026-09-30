@@ -17,6 +17,8 @@
 
 #include <stdint.h>
 
+#include "audio.h"
+#include "audio_sample.h"
 #include "cart_shared.h"
 #include "debug.h"
 #include "fb.h"
@@ -31,6 +33,7 @@
 #include "pico/time.h"
 #include "sidecart_logo.h"
 #include "sidecart_text.h"
+#include "st_session.h"
 
 /* Per-file -O3: the menu now runs a per-pixel rotozoom backdrop.
  * Pure compute -- no bus/PIO timing code here -- so opt it for speed. */
@@ -104,22 +107,24 @@ static demo_state_t s_state;
 static const demo_module_t *s_active;
 static int s_menu_sel; /* highlighted menu item (0..MENU_ITEM_COUNT-1) */
 
-#define MENU_ITEM_COUNT 4
+#define MENU_ITEM_COUNT 7
 static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
     &demo_parallax,
     &demo_3d,
     &demo_sprites,
     &demo_cojorotozoom,
+    &demo_input,
+    &demo_arena,
+    &demo_zap,
 };
 
 /* IKBD scancodes for the menu hotkeys. ESC = $01 is the back/exit
- * key; 1/2/3/4 = $02/$03/$04/$05 on the unshifted top row. */
+ * key; 1..7 = $02..$08 on the unshifted top row. */
 #define IKBD_SC_ESC 0x01u
 #define IKBD_SC_1   0x02u
-#define IKBD_SC_2   0x03u
-#define IKBD_SC_3   0x04u
-#define IKBD_SC_4   0x05u
+#define IKBD_SC_7   0x08u
 #define IKBD_SC_D   0x20u  /* hidden: toggle DRAW/C2P readout (menu + demos) */
+#define IKBD_SC_B   0x30u  /* B = return to Booster (menu only) */
 #define IKBD_SC_RET 0x1Cu  /* Return = launch the highlighted item */
 #define IKBD_SC_UP  0x48u  /* move selection up */
 #define IKBD_SC_DOWN 0x50u /* move selection down */
@@ -251,8 +256,9 @@ static void __not_in_flash_func(render_menu)(void) {
     v2 += dvy2;
   }
 
-  /* Dark panel behind the menu list for legibility, then the text. */
-  fb_fill_rect(48, 64, 224, 96, 15);
+  /* Dark panel behind the menu list for legibility, centred on the
+   * screen, then the text. */
+  fb_fill_rect(48, 38, 224, 124, 15);
 
   font_set_font(&font8x8);
   font_set_color(0);
@@ -262,11 +268,12 @@ static void __not_in_flash_func(render_menu)(void) {
   font_print("S I D E C A R T R I D G E");
 
   static const char *const items[MENU_ITEM_COUNT] = {
-      "1.  Uridium scroll", "2.  3D Solid", "3.  Multi-sprite swarm",
-      "4.  Cojorotozoom"};
+      "1.  Uridium scroll", "2.  3D Solid",  "3.  Multi-sprite swarm",
+      "4.  Cojorotozoom",   "5.  Input test", "6.  Arena (joystick)",
+      "7.  Zap (mouse)"};
   font_align(FONT_ALIGN_LEFT);
   for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    int iy = 76 + i * 16;
+    int iy = 46 + i * 13;
     if (i == s_menu_sel) {
       fb_fill_rect(56, iy - 2, 208, 12, 14); /* amber highlight bar */
       font_set_color(15);                    /* dark text on the bar */
@@ -277,8 +284,11 @@ static void __not_in_flash_func(render_menu)(void) {
     font_print(items[i]);
   }
   font_set_color(0);
-  font_move(60, 144);
+  font_move(60, 140);
   font_print("UP/DN  RET=start  ESC=exit");
+  font_align(FONT_ALIGN_CENTER);
+  font_move(FB_CHUNKED_W / 2, 151);
+  font_print("B=return to Booster");
 
   /* Hidden DRAW/C2P readout (toggled with 'D'), previous frame's numbers
    * on a dark strip at the bottom. */
@@ -308,14 +318,53 @@ static void exit_to_gem(void) {
   s_state = DEMO_STATE_EXITING;
 }
 
+/* 'B': a last frame that says what happens -- the ST shows it while it
+ * waits for its cold reset -- then leave for Booster. */
+static void return_to_booster(void) {
+  fb_fill_rect(0, 0, FB_CHUNKED_W, FB_CHUNKED_H, 15);
+  font_set_font(&font8x8);
+  font_set_color(0);
+  font_align(FONT_ALIGN_CENTER);
+  font_move(FB_CHUNKED_W / 2, FB_CHUNKED_H / 2 - 4);
+  font_print("Returning to Booster...");
+  fb_publish();
+  st_session_return_to_booster();
+}
+
+void demo_menu_music(void) {
+  /* A .YMS file from the app folder first; on any failure (no SD, file
+   * missing, bad header, rate mismatch) the baked-in Ghostbusters G1
+   * jingle, so the menu always has sound. */
+  if (audio_play_yms_file("DEMO.YMS") < 0) {
+    audio_play_loop(audio_sample_data, (uint32_t)sizeof(audio_sample_data));
+  }
+}
+
 void demo_dispatcher_init(void) {
   s_state = DEMO_STATE_MENU;
   s_active = NULL;
+  demo_menu_music();
   /* Take ownership of the ESC key from ikbd.c -- the dispatcher
    * routes it to "back to menu" while a demo is active and uses it
    * to exit to GEM only from the menu. */
   ikbd_set_esc_auto_exit(false);
   DPRINTF("demo_dispatcher_init: MENU state, ESC owned by dispatcher\n");
+}
+
+/* Back to the menu, whatever was left -- a demo running, or the dispatcher
+ * waiting for the exit to GEM. */
+static void back_to_menu(void) {
+  if (s_state == DEMO_STATE_ACTIVE && s_active && s_active->teardown) {
+    s_active->teardown();
+  }
+  s_active = NULL;
+  s_state = DEMO_STATE_MENU;
+}
+
+/* A new ST session (st_session.h): back to the menu. */
+void demo_dispatcher_restart(void) {
+  back_to_menu();
+  DPRINTF("dispatcher: new ST session -> menu\n");
 }
 
 /* Launch the demo at menu index `idx` (shared by the number keys and
@@ -355,6 +404,10 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
         DPRINTF("dispatcher: ESC from menu -> exit to GEM\n");
         exit_to_gem();
         break;
+      case IKBD_SC_B:
+        DPRINTF("dispatcher: B from menu -> return to Booster\n");
+        return_to_booster();
+        break;
       case IKBD_SC_UP:
         s_menu_sel = (s_menu_sel + MENU_ITEM_COUNT - 1) % MENU_ITEM_COUNT;
         break;
@@ -364,13 +417,10 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
       case IKBD_SC_RET:
         launch_demo((unsigned)s_menu_sel);
         break;
-      case IKBD_SC_1:
-      case IKBD_SC_2:
-      case IKBD_SC_3:
-      case IKBD_SC_4:
-        launch_demo((unsigned)(k->scancode - IKBD_SC_1));
-        break;
       default:
+        if (k->scancode >= IKBD_SC_1 && k->scancode <= IKBD_SC_7) {
+          launch_demo((unsigned)(k->scancode - IKBD_SC_1));
+        }
         break;
     }
     return;
@@ -393,7 +443,107 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
   }
 }
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/* A test tone through the PCM path (DEVHOOKS_APP_TONE): a sine, whose
+ * clicks and jitter are easy to hear, on either output. */
+static const int8_t k_tone_sine[256] = {
+    0, 2, 5, 7, 10, 12, 15, 17, 20, 22, 24, 27, 29, 31, 34, 36,
+    38, 41, 43, 45, 47, 49, 51, 53, 56, 58, 60, 62, 63, 65, 67, 69,
+    71, 72, 74, 76, 77, 79, 80, 82, 83, 84, 86, 87, 88, 89, 90, 91,
+    92, 93, 94, 95, 96, 96, 97, 98, 98, 99, 99, 99, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 99, 99, 99, 98, 98, 97, 96, 96, 95, 94, 93,
+    92, 91, 90, 89, 88, 87, 86, 84, 83, 82, 80, 79, 77, 76, 74, 72,
+    71, 69, 67, 65, 63, 62, 60, 58, 56, 53, 51, 49, 47, 45, 43, 41,
+    38, 36, 34, 31, 29, 27, 24, 22, 20, 17, 15, 12, 10, 7, 5, 2,
+    0, -2, -5, -7, -10, -12, -15, -17, -20, -22, -24, -27, -29, -31, -34, -36,
+    -38, -41, -43, -45, -47, -49, -51, -53, -56, -58, -60, -62, -63, -65, -67, -69,
+    -71, -72, -74, -76, -77, -79, -80, -82, -83, -84, -86, -87, -88, -89, -90, -91,
+    -92, -93, -94, -95, -96, -96, -97, -98, -98, -99, -99, -99, -100, -100, -100, -100,
+    -100, -100, -100, -100, -100, -99, -99, -99, -98, -98, -97, -96, -96, -95, -94, -93,
+    -92, -91, -90, -89, -88, -87, -86, -84, -83, -82, -80, -79, -77, -76, -74, -72,
+    -71, -69, -67, -65, -63, -62, -60, -58, -56, -53, -51, -49, -47, -45, -43, -41,
+    -38, -36, -34, -31, -29, -27, -24, -22, -20, -17, -15, -12, -10, -7, -5, -2,
+};
+static uint32_t s_tone_phase;
+static uint32_t s_tone_step;
+
+static void tone_cb(int8_t *buf, uint32_t samples) {
+  for (uint32_t i = 0; i < samples; i++) {
+    buf[i] = k_tone_sine[s_tone_phase >> 24];
+    s_tone_phase += s_tone_step;
+  }
+}
+
+/* Extra time every frame takes, set from the host (DEVHOOKS_APP_SLOW_FRAME):
+ * an app late with its frames, on demand. The sound and the publish
+ * handshake must survive it. */
+static uint32_t s_slow_frame_us;
+
+uint32_t demo_dispatcher_devhook(uint16_t commandId, const uint16_t *payload,
+                                 uint16_t payloadSize) {
+  uint16_t arg = payloadSize >= 2u ? payload[0] : 0u;
+  switch (commandId) {
+    case DEVHOOKS_APP_DEMO:
+      if (arg < 1u || arg > MENU_ITEM_COUNT) return 0;
+      back_to_menu();
+      launch_demo(arg - 1u);
+      return 1;
+    case DEVHOOKS_APP_MENU:
+      DPRINTF("dispatcher: host -> menu\n");
+      back_to_menu();
+      return 1;
+    case DEVHOOKS_APP_OVERLAY:
+      g_show_timing = arg != 0u;
+      return 1;
+    case DEVHOOKS_APP_SLOW_FRAME:
+      s_slow_frame_us = (uint32_t)arg * 1000u;
+      DPRINTF("dispatcher: every frame stalls %u ms\n", (unsigned)arg);
+      return 1;
+    case DEVHOOKS_APP_INPUT_MODE:
+      if (arg >= IKBD_INPUT_MODES) return 0;
+      DPRINTF("dispatcher: host -> input mode %u\n", (unsigned)arg);
+      ikbd_set_input_mode((ikbd_input_mode_t)arg);
+      return 1;
+    case DEVHOOKS_APP_AUDIO_OUT:
+      audio_prefer_ym(arg != 0u);
+      return 1;
+    case DEVHOOKS_APP_TONE:
+      if (arg == 0u) {
+        DPRINTF("dispatcher: host -> tone off, DEMO.YMS\n");
+        return audio_play_yms_file("DEMO.YMS") == 0 ? 1u : 0u;
+      }
+      DPRINTF("dispatcher: host -> tone %u Hz\n", (unsigned)arg);
+      s_tone_step = (uint32_t)(((uint64_t)arg << 32) / AUDIO_DMA_RATE_HZ);
+      audio_set_pcm_callback(tone_cb, AUDIO_DMA_RATE_HZ);
+      return 1;
+    case DEVHOOKS_APP_COPY_MODE: {
+      uint16_t piece = payloadSize >= 4u ? payload[1] : 0u;
+      if (arg > CART_BLIT_MODE_BLITTER || piece > 255u) return 0;
+      DPRINTF("dispatcher: host -> copy mode %u, piece %u\n", (unsigned)arg,
+              (unsigned)piece);
+      fb_set_copy_mode((uint8_t)arg, (uint8_t)piece);
+      return 1;
+    }
+    case DEVHOOKS_APP_IKBD_CMD: {
+      uint8_t cmd[CART_IKBD_OUT_MAX];
+      size_t n = payloadSize / 2u;
+      if (n > sizeof(cmd)) return 0;
+      for (size_t i = 0; i < n; i++) cmd[i] = (uint8_t)payload[i];
+      DPRINTF("dispatcher: host -> %u IKBD command byte(s)\n", (unsigned)n);
+      return ikbd_send_commands(cmd, n) ? 1u : 0u;
+    }
+    default:
+      return 0;
+  }
+}
+#endif
+
 void demo_dispatcher_render_frame(void) {
+#if defined(_DEBUG) && (_DEBUG != 0)
+  if (s_slow_frame_us != 0u) {
+    busy_wait_us_32(s_slow_frame_us);
+  }
+#endif
   switch (s_state) {
     case DEMO_STATE_MENU:
       render_menu();

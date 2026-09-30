@@ -1,79 +1,73 @@
 #include "select.h"
 
+#include "hardware/sync.h"
+
+#define SELECT_US_PER_MS 1000U
+#define SELECT_DEBOUNCE_US ((uint32_t)SELECT_DEBOUNCE_MS * SELECT_US_PER_MS)
+#define SELECT_LONG_RESET_US ((uint32_t)SELECT_LONG_RESET * SELECT_US_PER_MS)
+
 static reset_callback_t reset_cb = NULL;
 static reset_callback_t reset_long_cb = NULL;
-static volatile bool core1WaitActive = false;
-static bool selectPressedLatched = false;
-static absolute_time_t selectPressStartTime;
-static bool selectLongPressDetected = false;
 
-// Stronger debouncer ported from md-drives-emulator: poll the button
-// every SELECT_LOOP_DELAY ms and require SELECT_DEBOUNCE_MS of
-// continuously matching samples before accepting the state. Replaces a
-// 2-sample debouncer that could be fooled by a single bouncing edge
-// during the 20 ms window.
-static bool select_detectStableState(bool expectedState) {
-  uint32_t stable_ms = 0;
-  while (stable_ms < SELECT_DEBOUNCE_MS) {
-    if (select_detectPush() != expectedState) {
-      return false;
-    }
-    tight_loop_contents();
-    sleep_ms(SELECT_LOOP_DELAY);
-    stable_ms += SELECT_LOOP_DELAY;
-  }
-  return true;
-}
+// Edge history written by the GPIO interrupt. It lets select_poll() see a
+// press that started and ended while core 0 was busy (an SD stall, a Wi-Fi
+// wait). Times are time_us_32() values; differences stay valid for 35 min.
+static volatile bool edgeSeen = false;
+static volatile uint32_t lastEdgeUs = 0;
+static volatile bool riseSeen = false;
+static volatile uint32_t riseUs = 0;  // first rise of a candidate press
+static volatile bool fallSeen = false;
+static volatile uint32_t fallUs = 0;  // last fall after that rise
 
-static uint32_t select_getPressDurationMs(void) {
-  int64_t elapsedUs =
-      absolute_time_diff_us(selectPressStartTime, get_absolute_time());
-  if (elapsedUs <= 0) {
-    return 0;
-  }
+// Debounced state, owned by select_poll(). The level is also timed here, not
+// only by the interrupt: the edge detector reads the pad before the input
+// override, so it misses presses forced through the override (swd.py select).
+static bool lastLevel = false;
+static uint32_t lastLevelChangeUs = 0;
+static bool pressed = false;
+static bool longPressHandled = false;
+static uint32_t pressStartUs = 0;
 
-  return (uint32_t)(elapsedUs / 1000);
-}
-
-void __not_in_flash_func(select_waitPush)() {
-  DPRINTF("Waiting for SELECT button release\n");
-
-  if (!select_detectStableState(true)) {
-    DPRINTF("SELECT button was not stably pressed\n");
+static void __not_in_flash_func(select_gpioIrq)(void) {
+  uint32_t events = gpio_get_irq_event_mask(SELECT_GPIO) &
+                    (GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL);
+  if (events == 0) {
     return;
   }
+  gpio_acknowledge_irq(SELECT_GPIO, events);
 
-  uint32_t press_duration = 0;
-  bool longPressDetected = false;
-  while (select_detectPush()) {
-    tight_loop_contents();
-    sleep_ms(SELECT_LOOP_DELAY);
-    if (press_duration < SELECT_LONG_RESET) {
-      press_duration += SELECT_LOOP_DELAY;
-      if (press_duration >= SELECT_LONG_RESET) {
-        longPressDetected = true;
-      }
-    }
+  uint32_t now = time_us_32();
+  edgeSeen = true;
+  lastEdgeUs = now;
+  if ((events & GPIO_IRQ_EDGE_RISE) != 0U && !riseSeen) {
+    riseSeen = true;
+    riseUs = now;
   }
+  if ((events & GPIO_IRQ_EDGE_FALL) != 0U && riseSeen) {
+    fallSeen = true;
+    fallUs = now;
+  }
+}
 
-  while (!select_detectStableState(false)) {
-    tight_loop_contents();
-    sleep_ms(SELECT_LOOP_DELAY);
-  }
+static void select_clearPressHistory(void) {
+  uint32_t ints = save_and_disable_interrupts();
+  riseSeen = false;
+  fallSeen = false;
+  restore_interrupts(ints);
+}
 
-  DPRINTF("SELECT button released after %lu ms\n", (unsigned long)press_duration);
-  if (longPressDetected) {
-    if (reset_long_cb != NULL) {
-      DPRINTF("Long press detected. Executing long reset callback\n");
-      reset_long_cb();
-    }
-  } else {
-    if (reset_cb != NULL) {
-      DPRINTF("Short press detected. Executing reset callback\n");
-      reset_cb();
-    }
+static void select_runShort(void) {
+  if (reset_cb != NULL) {
+    DPRINTF("Short press detected. Executing short press callback\n");
+    reset_cb();
   }
-  DPRINTF("SELECT button callback returned!\n");
+}
+
+static void select_runLong(void) {
+  if (reset_long_cb != NULL) {
+    DPRINTF("Long press detected. Executing long press callback\n");
+    reset_long_cb();
+  }
 }
 
 void select_configure() {
@@ -82,98 +76,84 @@ void select_configure() {
   gpio_set_dir(SELECT_GPIO, GPIO_IN);
   gpio_set_pulls(SELECT_GPIO, false, true);  // Pull down (false, true)
   gpio_pull_down(SELECT_GPIO);
+
+  // A raw handler, so the CYW43 driver's own GPIO interrupt is not replaced.
+  gpio_add_raw_irq_handler(SELECT_GPIO, select_gpioIrq);
+  gpio_set_irq_enabled(SELECT_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL,
+                       true);
+  irq_set_enabled(IO_IRQ_BANK0, true);
 }
 
 bool select_detectPush() { return (gpio_get(SELECT_GPIO) != 0); }
 
-void select_coreWaitPush(reset_callback_t reset, reset_callback_t resetLong) {
-  inline void core1_waitPush(void) {
-    DPRINTF("Waiting for SELECT button to be pushed\n");
-    while (core1WaitActive && !select_detectStableState(true)) {
-      tight_loop_contents();
-      sleep_ms(SELECT_LOOP_DELAY);
-    }
+void select_poll(void) {
+  uint32_t now = time_us_32();
+  bool level = select_detectPush();
 
-    if (!core1WaitActive) {
+  uint32_t ints = save_and_disable_interrupts();
+  bool anyEdge = edgeSeen;
+  uint32_t lastEdge = lastEdgeUs;
+  bool rose = riseSeen;
+  uint32_t rise = riseUs;
+  bool fell = fallSeen;
+  uint32_t fall = fallUs;
+  restore_interrupts(ints);
+
+  if (level != lastLevel) {
+    lastLevel = level;
+    lastLevelChangeUs = now;
+  }
+  bool settled = (now - lastLevelChangeUs) >= SELECT_DEBOUNCE_US &&
+                 (!anyEdge || (now - lastEdge) >= SELECT_DEBOUNCE_US);
+
+  if (!pressed) {
+    if (!settled) {
       return;
     }
-
-    DPRINTF("SELECT button pushed!\n");
-    select_waitPush();
-    core1WaitActive = false;
-  }
-
-  reset_cb = reset;
-  reset_long_cb = resetLong;
-
-  if (core1WaitActive) {
-    DPRINTF("Core 1 wait for SELECT is already active\n");
-    return;
-  }
-
-  DPRINTF("Launching core 1 to wait for SELECT button push\n");
-  core1WaitActive = true;
-  multicore_launch_core1(core1_waitPush);
-}
-
-void select_coreWaitPushDisable() {
-  if (!core1WaitActive) {
-    DPRINTF("Core 1 wait for SELECT is already disabled\n");
-    return;
-  }
-
-  DPRINTF("Disabling core 1\n");
-  core1WaitActive = false;
-  multicore_reset_core1();
-}
-
-void select_checkPushReset() {
-  bool isPressed = select_detectPush();
-  if (isPressed && !selectPressedLatched) {
-    if (!select_detectStableState(true)) {
+    if (level) {
+      pressed = true;
+      longPressHandled = false;
+      pressStartUs = rose ? rise : lastLevelChangeUs;
+      select_clearPressHistory();
+      DPRINTF("SELECT button pushed\n");
       return;
     }
-
-    selectPressedLatched = true;
-    selectPressStartTime = get_absolute_time();
-    selectLongPressDetected = false;
-    DPRINTF("SELECT button pushed. Waiting for release\n");
-    return;
-  }
-
-  if (isPressed && selectPressedLatched) {
-    if (!selectLongPressDetected &&
-        (select_getPressDurationMs() >= SELECT_LONG_RESET)) {
-      selectLongPressDetected = true;
-      DPRINTF("SELECT button long press threshold reached\n");
-    }
-    return;
-  }
-
-  if (!isPressed && selectPressedLatched) {
-    if (!select_detectStableState(false)) {
-      return;
-    }
-
-    uint32_t pressDurationMs = select_getPressDurationMs();
-    bool longPress = selectLongPressDetected ||
-                     (pressDurationMs >= SELECT_LONG_RESET);
-    selectPressedLatched = false;
-    selectLongPressDetected = false;
-
-    DPRINTF("SELECT button released after %lu ms\n",
-            (unsigned long)pressDurationMs);
-    if (longPress) {
-      if (reset_long_cb != NULL) {
-        DPRINTF("Long press detected. Executing long reset callback\n");
-        reset_long_cb();
+    // Released and stable: a whole press may have happened since the last
+    // call. Shorter than the debounce window, it was a bounce.
+    if (rose && fell && (fall - rise) >= SELECT_DEBOUNCE_US) {
+      uint32_t heldMs = (fall - rise) / SELECT_US_PER_MS;
+      select_clearPressHistory();
+      DPRINTF("SELECT pressed and released while busy, %lu ms\n",
+              (unsigned long)heldMs);
+      if (heldMs >= SELECT_LONG_RESET) {
+        select_runLong();
+      } else {
+        select_runShort();
       }
-    } else {
-      if (reset_cb != NULL) {
-        DPRINTF("Short press detected. Executing reset callback\n");
-        reset_cb();
-      }
+      return;
     }
+    if (rose) {
+      select_clearPressHistory();
+    }
+    return;
+  }
+
+  if (!longPressHandled && (now - pressStartUs) >= SELECT_LONG_RESET_US) {
+    longPressHandled = true;
+    select_runLong();
+    return;
+  }
+
+  if (level || !settled) {
+    return;
+  }
+
+  pressed = false;
+  select_clearPressHistory();
+  DPRINTF("SELECT button released after %lu ms\n",
+          (unsigned long)((now - pressStartUs) / SELECT_US_PER_MS));
+  if (!longPressHandled) {
+    select_runShort();
   }
 }
 

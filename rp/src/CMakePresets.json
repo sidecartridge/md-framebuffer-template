@@ -12,13 +12,13 @@
       "generator": "Unix Makefiles",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_BUILD_TYPE": "MinSizeRel"
+        "CMAKE_BUILD_TYPE": "Release"
       }
     },
     {
       "name": "pico_w-debug",
       "displayName": "Pico W Debug",
-      "description": "RP2040 Pico W, MinSizeRel optimisation, _DEBUG=1 (DPRINTF + setvbuf active, newlib printf chain linked).",
+      "description": "RP2040 Pico W, CMake Release (-O3), _DEBUG=1 (DPRINTF + setvbuf active, newlib printf chain linked).",
       "inherits": "base",
       "binaryDir": "${sourceDir}/../build-pico_w-debug",
       "environment": {
@@ -29,7 +29,7 @@
     {
       "name": "pico_w-release",
       "displayName": "Pico W Release",
-      "description": "RP2040 Pico W, MinSizeRel optimisation, _DEBUG=0 (DPRINTF compiled out, newlib printf chain dropped).",
+      "description": "RP2040 Pico W, CMake Release (-O3), _DEBUG=0 (DPRINTF compiled out, newlib printf chain dropped).",
       "inherits": "base",
       "binaryDir": "${sourceDir}/../build-pico_w-release",
       "environment": {

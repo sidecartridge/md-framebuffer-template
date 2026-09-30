@@ -23,14 +23,18 @@
 #include "font8x8.h"            /* defines `font8x8` (FB_FONT instance) */
 #include "ikbd.h"
 #include "pico/time.h"          /* time_us_32 for the timing overlay */
+#include "profile.h"
+#include "st_session.h"
 
-/* VBL frame-sync. The m68k does a cart-bus read at
- * $FB8400 after each blit (see VBLSYNC_ADDR in userfw.s); the
- * commemul ring captures it with low-16 = 0x84xx. fb_pump_rom3
- * routes ROM3 samples to both the IKBD demux and this detector;
- * fb_publish() blocks until s_vbl_seen advances before overwriting
- * the cart FB. The ~33 ms timeout keeps the RP from hanging if the
- * m68k isn't emitting acks (e.g. before it boots). */
+/* Blit-done ack. The m68k blits only a frame it has not blitted yet (the
+ * frame counter's low word changed; see FB_FRAME_COUNTER_ADDR in userfw.s) and
+ * then does a cart-bus read at $FB8400 (VBLSYNC_ADDR); the commemul ring
+ * captures it with low-16 = 0x84xx. fb_pump_rom3 routes ROM3 samples to
+ * the IKBD demux, the ST's hello and this detector. fb_publish() waits for
+ * the ack of the frame it published last before overwriting the cart FB:
+ * after it, the m68k reads nothing until the counter changes again, so the
+ * publish can happen at any moment. The timeout keeps the RP from hanging
+ * when the m68k is not running (e.g. before it boots, or in GEM). */
 #define FB_VBLSYNC_HIBYTE   0x8400u
 #define FB_VBLSYNC_HIMASK   0xFF00u
 /* Safety net only: must comfortably exceed the worst-case latency from
@@ -42,6 +46,9 @@
 
 static volatile uint32_t s_vbl_seen;
 static uint32_t s_vbl_published;
+/* Publishes that gave up waiting for the ack: expected until the ST runs
+ * userfw, never while it does. Readable over SWD by its symbol. */
+uint32_t fbAckTimeouts = 0;
 
 /* Demo sprite. Multi-colour 16x16 ball with a transparent
  * background (key = 0xFF; transparent corners give it a rounded look
@@ -105,6 +112,11 @@ int fb_init(const struct FB_MODE *mode) {
    * future callers that might re-init fb without erasing. (Used to
    * live in chandler_init; relocated when chandler was removed.) */
   *fb_frame_counter = 0;
+
+  /* The app's profile (profile.h): userfw reads it once, at its boot, for
+   * the frames a VBL and the sound's rate. */
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_PROFILE_OFFSET)) = PROFILE_ID;
 
   /* Launch Core 1 with the chunky-to-planar bottom-half worker. */
   fb_chunked_init();
@@ -249,16 +261,104 @@ void fb_render_frame(void) {
   last_frame_us = time_us_32() - t_frame_start;
 }
 
+#if defined(_DEBUG) && (_DEBUG != 0)
+/* The ST's stopwatch, when userfw.s reports it (TIME_STUDY): points of its
+ * loop with the stopwatch's low 16 bits (MFP Timer-A /10: 10 / 2.4576 us a
+ * tick). fbStopwatch keeps the latest FB_STOPWATCH_POINTS of them as point
+ * << 16 | ticks and fbStopwatchCount counts them all: tools/dev/swd.py
+ * stopwatch reads them. From them, the slack of each frame the ST copied:
+ * how long before the VBL that may start the next frame (the profile's VBLs
+ * a frame after the one before the copy) the copy ended. A histogram in
+ * FB_SLACK_BUCKET_US steps (the last bucket holds the rest), the smallest
+ * slack seen, and the copies that ended after that VBL (the next frame
+ * waited a VBL more). Readable over SWD. */
+#define FB_STOPWATCH_POINTS 128u
+#define FB_STOPWATCH_POINT_COPY 1u
+#define FB_STOPWATCH_POINT_COPIED 2u
+#define FB_STOPWATCH_POINT_VBL 4u
+#define FB_STOPWATCH_TICK_NS 4069u /* 10 / 2.4576 MHz */
+#define FB_SLACK_BUCKETS 40u
+#define FB_SLACK_BUCKET_US 100u
+/* A VBL of the PAL ST (32.084988 MHz / 4 / (512 x 313)). */
+#define FB_VBL_PERIOD_US 19979u
+volatile uint32_t fbStopwatch[FB_STOPWATCH_POINTS];
+volatile uint32_t fbStopwatchCount = 0;
+volatile uint32_t fbSlackHist[FB_SLACK_BUCKETS];
+volatile uint32_t fbSlackMinUs = UINT32_MAX;
+volatile uint32_t fbSlackLate = 0;
+volatile uint32_t fbSlackReports = 0;
+static int s_sw_point = -1;
+static int s_sw_high = -1;
+static bool s_sw_vbl_seen, s_sw_copying;
+static uint16_t s_sw_vbl, s_sw_copy_vbl; /* the last VBL, the VBL before the copy */
+
+static void fb_stopwatch_sample(uint16_t sample) {
+  uint8_t value = (uint8_t)sample;
+  switch (sample & CART_ROM3_WINDOW_MASK) {
+    case CART_ROM3_STUDY_POINT_WINDOW:
+      s_sw_point = value;
+      s_sw_high = -1;
+      return;
+    case CART_ROM3_STUDY_HI_WINDOW:
+      if (s_sw_point >= 0) s_sw_high = value;
+      return;
+    case CART_ROM3_STUDY_LO_WINDOW:
+      break;
+    default:
+      return;
+  }
+  if (s_sw_point < 0 || s_sw_high < 0) return;
+  uint32_t point = (uint32_t)s_sw_point;
+  uint16_t ticks = (uint16_t)((s_sw_high << 8) | value);
+  s_sw_point = s_sw_high = -1;
+  fbStopwatch[fbStopwatchCount % FB_STOPWATCH_POINTS] = (point << 16) | ticks;
+  fbStopwatchCount++;
+  if (point == FB_STOPWATCH_POINT_VBL) {
+    s_sw_vbl = ticks;
+    s_sw_vbl_seen = true;
+  } else if (point == FB_STOPWATCH_POINT_COPY && s_sw_vbl_seen) {
+    s_sw_copy_vbl = s_sw_vbl;
+    s_sw_copying = true;
+  } else if (point == FB_STOPWATCH_POINT_COPIED && s_sw_copying) {
+    s_sw_copying = false;
+    uint32_t ended_us =
+        (uint16_t)(ticks - s_sw_copy_vbl) * FB_STOPWATCH_TICK_NS / 1000u;
+    uint32_t deadline_us = PROFILE_VBLS_A_FRAME * FB_VBL_PERIOD_US;
+    fbSlackReports++;
+    if (ended_us >= deadline_us) {
+      fbSlackLate++;
+      return;
+    }
+    uint32_t slack_us = deadline_us - ended_us;
+    if (slack_us < fbSlackMinUs) fbSlackMinUs = slack_us;
+    uint32_t bucket = slack_us / FB_SLACK_BUCKET_US;
+    if (bucket >= FB_SLACK_BUCKETS) bucket = FB_SLACK_BUCKETS - 1u;
+    fbSlackHist[bucket]++;
+  }
+}
+#else
+#define fb_stopwatch_sample(sample) ((void)0)
+#endif
+
 /* ROM3 ring dispatch: route each captured cart-bus read to the IKBD
- * demux and to the VBL frame-sync detector. */
+ * demux, the ST's hello, the VBL frame-sync detector and (debug builds) the
+ * ST's stopwatch. */
 static void fb_rom3_dispatch(uint16_t sample) {
   ikbd_consume_rom3_sample(sample);
+  st_session_consume_rom3_sample(sample);
   if ((sample & FB_VBLSYNC_HIMASK) == FB_VBLSYNC_HIBYTE) {
     s_vbl_seen++;
   }
+  fb_stopwatch_sample(sample);
 }
 
 void fb_pump_rom3(void) { commemul_poll(fb_rom3_dispatch); }
+
+void fb_set_copy_mode(uint8_t mode, uint8_t piece) {
+  *((volatile uint16_t *)((uintptr_t)&__rom_in_ram_start__ +
+                          CART_BLIT_MODE_OFFSET)) =
+      (uint16_t)(mode | (piece << 8));
+}
 
 void fb_publish(void) {
   /* 1. Transpose chunked -> planar SCRATCH (RP RAM, dual-core). This is
@@ -277,6 +377,7 @@ void fb_publish(void) {
   while (s_vbl_seen == s_vbl_published) {
     fb_pump_rom3();
     if (time_us_32() - t_wait > FB_VSYNC_TIMEOUT_US) {
+      fbAckTimeouts++;
       break;
     }
   }

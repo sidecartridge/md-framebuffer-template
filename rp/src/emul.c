@@ -18,22 +18,25 @@
 #include "emul.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include "aconfig.h"
 #include "audio.h"
-#include "audio_sample.h"
 #include "commemul.h"
 #include "debug.h"
 #include "demo.h"
+#include "devhooks.h"
 #include "fb.h"
 #include "ff.h"
 #include "ikbd.h"
 #include "memfunc.h"
 #include "palette.h"
 #include "pico/stdlib.h"
+#include "reset.h"
 #include "romemul.h"
 #include "sdcard.h"
 #include "select.h"
+#include "st_session.h"
 #include "target_firmware.h"
 
 /* No sleep -- tight loop. The dirty-frame handshake means
@@ -48,12 +51,31 @@ void emul_start() {
   // bytes up to the last non-zero in BOOT.BIN (padded to 64 KB), so
   // without an explicit erase the framebuffer region at $FA8300+ would
   // be whatever was sitting in RAM and the m68k blit would copy that
-  // noise to the ST screen. Zero the whole 64 KB shared region first
-  // so every byte the m68k can see is deterministic.
-  ERASE_FIRMWARE_IN_RAM();
-
-  // Copy the cartridge image into the now-zeroed region.
+  // noise to the ST screen. COPY_FIRMWARE_TO_RAM zeroes the whole 64 KB
+  // shared region first, so every byte the m68k can see is deterministic,
+  // then copies the cartridge image into it.
   COPY_FIRMWARE_TO_RAM((uint16_t *)target_firmware, target_firmware_length);
+#if defined(_DEBUG) && (_DEBUG != 0)
+  // The ST must see exactly the generated image.
+  if (memcmp((const void *)&__rom_in_ram_start__, target_firmware,
+             (size_t)target_firmware_length * sizeof(uint16_t)) != 0) {
+    DPRINTF("ERROR: cartridge image in RAM does not match target_firmware\n");
+  } else {
+    DPRINTF("Cartridge image in RAM verified (%u words)\n",
+            (unsigned)target_firmware_length);
+  }
+  // Nothing from a previous run may survive past the end of the image.
+  {
+    const uint8_t *window = (const uint8_t *)&__rom_in_ram_start__;
+    size_t used = (size_t)target_firmware_length * sizeof(uint16_t);
+    size_t leftovers = 0;
+    for (size_t i = used; i < ROM_SIZE_BYTES * ROM_BANKS; i++) {
+      if (window[i] != 0) leftovers++;
+    }
+    DPRINTF("Cartridge window after the image: %u non-zero bytes\n",
+            (unsigned)leftovers);
+  }
+#endif
 
   // Reset the IKBD ring (init order before commemul_init is fine since
   // the producer side runs from the main loop, not from an IRQ).
@@ -67,7 +89,7 @@ void emul_start() {
     panic("init_romemul failed: PIO/DMA claim or program load returned <0");
   }
 
-  // Bring up the ROM3 cart-bus capture (PIO + 32 KB DMA ring) BEFORE
+  // Bring up the ROM3 cart-bus capture (PIO + 4 KB DMA ring) BEFORE
   // fb_init: fb_init's first fb_publish() drains the ROM3 ring while it
   // waits for the m68k's VBL ack, so the ring must already exist. (At
   // boot the m68k may not be emitting acks yet; the first publish just
@@ -104,7 +126,9 @@ void emul_start() {
   // ignore the failure path or treat it as fatal. The folder name is
   // taken from per-app config (ACONFIG_PARAM_FOLDER) so apps can be
   // reconfigured from Booster without recompiling.
-  FATFS fsys;
+  // Static, not on core 0's stack: the FATFS object is about 600 bytes and
+  // f_mount keeps a pointer to it for as long as the card is used.
+  static FATFS fsys;
   SettingsConfigEntry *folder =
       settings_find_entry(aconfig_getContext(), ACONFIG_PARAM_FOLDER);
   const char *folderName = folder ? folder->value : "/test";
@@ -112,33 +136,31 @@ void emul_start() {
     DPRINTF("SD card unavailable. Continuing without SD.\n");
   }
 
-  // Audio source selection. Try to stream a
-  // .YMS file from the app folder first; on any failure (no SD,
-  // file missing, bad header, rate mismatch) fall back to the
-  // baked-in Ghostbusters G1 jingle so the demo still has audio.
-  // Apps swap their own audio_play_yms_file path or replace this
-  // block with audio_set_fill_callback() / audio_play_loop().
-  if (audio_play_yms_file("DEMO.YMS") < 0) {
-    audio_play_loop(audio_sample_data,
-                    (uint32_t)sizeof(audio_sample_data));
-  }
-
-  // Cartridge SELECT button -- apps can poll select_isPressed().
-  select_configure();
+  // Cartridge SELECT button, configured in main() (held at power-on it goes
+  // to Booster). While the app runs, as md-microfirmware-template: a short
+  // press restarts the RP, a press held 10 s is a factory reset (the global
+  // settings are erased and Booster then clears every app's settings).
+  // select_poll() in the main loop runs them; it never blocks.
+  select_setResetCallback(reset_device);
+  select_setLongResetCallback(reset_deviceAndEraseFlash);
 
   // Bring up the demo dispatcher. demo_dispatcher_init takes
   // ownership of the ESC key from ikbd.c (ESC now means "back to
   // menu" inside a demo and "exit to GEM" only when the menu is on
-  // screen). The first dispatcher render paints the boot menu over
-  // whatever fb_init left in the framebuffer.
+  // screen) and starts the menu's music (demo_menu_music(): DEMO.YMS
+  // from the SD card, else the built-in jingle; apps play their own with
+  // audio_play_yms_file(), audio_play_loop(), audio_set_pcm_callback()).
+  // The first dispatcher render paints the boot menu over whatever
+  // fb_init left in the framebuffer.
   demo_dispatcher_init();
+  // Debug builds: host commands over SWD (devhooks.h, tools/dev/swd.py).
+  devhooks_setAppHandler(demo_dispatcher_devhook);
 
   // Main loop:
-  //   1. Drain the ROM3 commemul ring straight into the IKBD raw-byte
-  //      ring (one PIO sample per IKBD byte the m68k Timer-B handler
-  //      forwarded; the filter inside ikbd_consume_rom3_sample picks
-  //      out the $FB8200..$FB82FF window).
-  //   2. Run the IKBD demux on whatever bytes arrived.
+  //   1. Drain the ROM3 commemul ring; ikbd_consume_rom3_sample keeps the
+  //      IKBD samples (every byte the m68k ACIA interrupt forwarded, the
+  //      ST's byte counts, overruns and input mode reports) in order.
+  //   2. Decode them: keys, mouse and joysticks (ikbd_pump).
   //   3. Forward decoded key events to the dispatcher (which routes
   //      to the menu or the active demo).
   //   4. Re-render the cart framebuffer via the dispatcher (menu UI
@@ -147,7 +169,14 @@ void emul_start() {
   DPRINTF("Entering main loop\n");
   while (true) {
     fb_pump_rom3();  /* drains ROM3 ring -> IKBD demux + VBL frame-sync */
+    devhooks_poll(); /* debug builds: keys and commands from the host */
     ikbd_pump();
+    select_poll();
+
+    /* The ST rebooted: start its session over (see st_session.h). */
+    if (st_session_consume_boot()) {
+      demo_dispatcher_restart();
+    }
 
     ikbd_key_event_t k;
     while (ikbd_pop_key(&k)) {

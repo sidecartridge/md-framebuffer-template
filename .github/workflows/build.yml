@@ -5,35 +5,84 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # The toolchain CLAUDE.md asks for in local builds. Ubuntu's packaged
+  # gcc-arm-none-eabi is a different compiler, and a different compiler
+  # produces a different image from the same sources.
+  ARM_TOOLCHAIN_VERSION: 14.2.rel1
+  # stcmd runs `docker run -it` unless this is set; a CI job has no TTY.
+  STCMD_NO_TTY: 1
+
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: [ "3.10" ]
-        include:
-          - os: ubuntu-latest
-    steps:  
+        build_type: [release, debug]
+    steps:
     - name: Checkout the code
-      uses: actions/checkout@v3
-  
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
-      with:
-        python-version: ${{ matrix.python-version }}
+      uses: actions/checkout@v4
 
-    - name: Install the Pico Toolchain
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+
+    - name: Install the build tools
       run: |
           sudo DEBIAN_FRONTEND=noninteractive apt update
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
-    
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential
+
+    # The firmware's pure logic, on the host, in seconds (tests/host/Makefile):
+    # a failing check fails the pull request before the firmware is built.
+    - name: Host tests
+      run: make -C tests/host test
+
+    - name: Cache the ARM GNU Toolchain
+      id: arm-toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/arm-gnu-toolchain
+        key: arm-gnu-toolchain-${{ env.ARM_TOOLCHAIN_VERSION }}-x86_64
+
+    - name: Download the ARM GNU Toolchain
+      if: steps.arm-toolchain.outputs.cache-hit != 'true'
+      run: |
+          mkdir -p ~/arm-gnu-toolchain
+          curl -fsSL "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN_VERSION}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}-x86_64-arm-none-eabi.tar.xz" \
+            | tar -xJ -C ~/arm-gnu-toolchain --strip-components=1
+
+    - name: Use the ARM GNU Toolchain
+      run: |
+          echo "$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_PATH"
+          echo "PICO_TOOLCHAIN_PATH=$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_ENV"
+
+    - name: Show the compiler version
+      run: arm-none-eabi-gcc --version
+
     - name: Install AtariST Toolkit Docker image
       run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
 
-    - name: Run - remove interactive
-      run: sed -i 's/-it//' /usr/local/bin/stcmd
+    # Date the build by its commit, so this build and a local build of the
+    # same commit with the same RELEASE_DATE are byte-identical.
+    - name: Date the build by its commit
+      run: echo "RELEASE_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
 
-    - name: Run - Build PICO_W release version
+    - name: Build PICO_W ${{ matrix.build_type }} version
       env:
         APP_UUID: ${{ secrets.APP_UUID }}
-      run: ./build.sh pico_w Release ${APP_UUID:-44444444-4444-4444-8444-444444444444}
+      run: ./build.sh pico_w ${{ matrix.build_type }} ${APP_UUID:-44444444-4444-4444-8444-444444444444}
+
+    # To the log as well: the job summary cannot be read back through the API.
+    - name: Build report
+      run: |
+          {
+            echo "### ${{ matrix.build_type }}"
+            echo '```'
+            sed -n 's/^#define RELEASE_BUILD_ID "\(.*\)"$/build ID:     \1/p' rp/build-pico_w-${{ matrix.build_type }}/generated/build_id/build_id.h
+            echo "release date: $RELEASE_DATE"
+            arm-none-eabi-size rp/build-pico_w-${{ matrix.build_type }}/rp.elf
+            cat dist/rp.uf2.md5sum
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

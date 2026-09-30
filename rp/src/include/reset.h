@@ -12,6 +12,8 @@
 #include "constants.h"
 #include "debug.h"
 #include "gconfig.h"
+#include "hardware/irq.h"
+#include "hardware/regs/m0plus.h"
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
 #include "pico/multicore.h"
@@ -31,6 +33,17 @@
  * printed.
  */
 static inline void reset_jump_to_booster(void) {
+  // The jump does not quieten our interrupts, and from the instruction that
+  // writes VTOR onwards they vector through Booster's table, into handlers it
+  // has not installed yet: the core locks up and Booster never runs. At the
+  // jump this app has the SDK's alarm IRQ and the Wi-Fi chip's host-wake GPIO
+  // IRQ enabled, and the latter fires whenever a packet arrives. Booster's
+  // start-up resets the peripherals, but not the NVIC in the core: mask and
+  // clear every interrupt here, and Booster enables what it needs itself.
+  irq_set_mask_enabled(0xFFFFFFFFu, false);
+  *((volatile uint32_t *)(PPB_BASE + M0PLUS_NVIC_ICPR_OFFSET)) = 0xFFFFFFFFu;
+  __dsb();
+  __isb();
   // This code jumps to the Booster application at the top of the flash memory.
   // The reason to perform this jump is for performance reasons.
   // It should be placed at the beginning of main() if the SELECT signal or

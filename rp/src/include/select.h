@@ -11,75 +11,44 @@
 
 #include "constants.h"
 #include "debug.h"
-#include "pico/multicore.h"
 #include "pico/stdlib.h"
 
-#define SELECT_LOOP_DELAY 10  // 10 ms
+// SELECT is watched on core 0 only, by select_poll(). Core 1 stays off: a
+// watcher on core 1 ran the long press's flash erase while core 0 executed
+// from the same flash, and both cores faulted until a power cycle.
 
-// Window of stable level required before accepting a press/release. The
-// debouncer polls every SELECT_LOOP_DELAY and requires SELECT_DEBOUNCE_MS
-// of consistent readings before returning true.
-#define SELECT_DEBOUNCE_MS 30
+#define SELECT_DEBOUNCE_MS 30  // 30 ms stable level before accepting a change
 
 #define SELECT_LONG_RESET 10000  // 10 seconds
 
 // Define a callback typdef for the reset function
-typedef void (*reset_callback_t)(void);
+typedef void (*reset_callback_t)();
 
 /**
  * @brief Initializes the SELECT detection.
  *
- * Configures the hardware and software parameters needed for detecting
- * the SELECT button press. Always call first.
+ * Configures the SELECT pin and a GPIO edge interrupt that records press and
+ * release times. Call it on core 0, which also runs select_poll().
  */
 void select_configure();
 
 /**
- * @brief Waits for button release.
- *
- * Blocks execution until the SELECT button is released. Ensures the user’s
- * push is fully handled.
- */
-void select_waitPush();
-
-/**
  * @brief Detects button press.
  *
- * Checks whether the SELECT button has been pressed.
- *
- * Verifies the button state and returns true if a push is detected.
+ * Returns the raw level of the SELECT pin: true while it is pressed.
  */
 bool select_detectPush();
 
 /**
- * @brief Waits for push in secondary core.
+ * @brief Runs the SELECT state machine; never blocks.
  *
- * Launches an asynchronous wait for a SELECT button push on the secondary core.
- * Accepts two callbacks: one for short press reset and one for long press
- * reset.
- *
- * @param reset Callback to be invoked on a short button press.
- * @param resetLong Callback to be invoked on a long button press.
+ * Call it from the main loop and from every long wait. A press must be stable
+ * for SELECT_DEBOUNCE_MS. The long callback runs once the button has been held
+ * for SELECT_LONG_RESET; otherwise the short callback runs on release. A press
+ * that started and ended while the caller was busy (seen by the edge
+ * interrupt) is handled at the next call.
  */
-void select_coreWaitPush(reset_callback_t reset, reset_callback_t resetLong);
-
-/**
- * @brief Disables secondary core wait.
- *
- * Disables waiting for the SELECT button push on the secondary core.
- *
- * Useful to cancel or adjust the handling in multicore scenarios.
- */
-void select_coreWaitPushDisable();
-
-/**
- * @brief Monitors for reset trigger.
- *
- * Monitors for a SELECT button push intended to trigger a device reset.
- *
- * Frequently called to check for reset conditions during operation.
- */
-void select_checkPushReset();
+void select_poll(void);
 
 /**
  * @brief Registers the reset callback.

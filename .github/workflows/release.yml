@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # The same toolchain and toolkit as the Build workflow and local builds.
+  ARM_TOOLCHAIN_VERSION: 14.2.rel1
+  STCMD_NO_TTY: 1
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -19,23 +24,42 @@ jobs:
           - os: ubuntu-latest
     steps:
     - name: Checkout the code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
-    - name: Install the Pico Toolchain
+    - name: Install the build tools
       run: |
           sudo DEBIAN_FRONTEND=noninteractive apt update
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential libstdc++-arm-none-eabi-newlib
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y cmake build-essential
+
+    - name: Cache the ARM GNU Toolchain
+      id: arm-toolchain
+      uses: actions/cache@v4
+      with:
+        path: ~/arm-gnu-toolchain
+        key: arm-gnu-toolchain-${{ env.ARM_TOOLCHAIN_VERSION }}-x86_64
+
+    - name: Download the ARM GNU Toolchain
+      if: steps.arm-toolchain.outputs.cache-hit != 'true'
+      run: |
+          mkdir -p ~/arm-gnu-toolchain
+          curl -fsSL "https://developer.arm.com/-/media/Files/downloads/gnu/${ARM_TOOLCHAIN_VERSION}/binrel/arm-gnu-toolchain-${ARM_TOOLCHAIN_VERSION}-x86_64-arm-none-eabi.tar.xz" \
+            | tar -xJ -C ~/arm-gnu-toolchain --strip-components=1
+
+    - name: Use the ARM GNU Toolchain
+      run: |
+          echo "$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_PATH"
+          echo "PICO_TOOLCHAIN_PATH=$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_ENV"
 
     - name: Install AtariST Toolkit Docker image
       run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
 
-    - name: Run - remove interactive
-      run: sed -i 's/-it//' /usr/local/bin/stcmd
+    - name: Date the build by its commit
+      run: echo "RELEASE_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
 
     - name: Install dependencies
       run: |

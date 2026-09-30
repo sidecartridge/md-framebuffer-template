@@ -31,11 +31,7 @@ set(PICO_BOARD ${BOARD_TYPE})
 
 # Determine board type macros
 if("${BOARD_TYPE}" STREQUAL "pico_w")
-    add_compile_definitions(BOARD_TYPE_PICO_W=1 BOARD_TYPE_PICO=0 BOARD_TYPE_CUSTOM16MB=0)
-elseif("${BOARD_TYPE}" STREQUAL "pico")
-    add_compile_definitions(BOARD_TYPE_PICO_W=0 BOARD_TYPE_PICO=1 BOARD_TYPE_CUSTOM16MB=0)
-elseif("${BOARD_TYPE}" STREQUAL "sidecartos_16mb")
-    add_compile_definitions(BOARD_TYPE_PICO_W=0 BOARD_TYPE_PICO=1 BOARD_TYPE_CUSTOM16MB=0)
+    add_compile_definitions(BOARD_TYPE_PICO_W=1 BOARD_TYPE_PICO=0)
 else()
     message(FATAL_ERROR "Unknown BOARD_TYPE: ${BOARD_TYPE}")
 endif()
@@ -81,6 +77,32 @@ include(${PICO_EXTRAS_PATH}/external/pico_extras_import.cmake)
 # Set name of project (as PROJECT_NAME) and C/C   standards
 project(rp C CXX)
 set(CMAKE_C_STANDARD 11)
+
+# malloc must return NULL on failure instead of panicking.
+#
+# This MUST come before pico_sdk_init(): the check that panics lives in the
+# SDK's own malloc.c, and pico_sdk_init() adds the SDK as a subdirectory, which
+# inherits compile definitions as they stand at that moment. Defined further
+# down, it would compile our sources with it and leave the SDK's malloc.c
+# untouched, which looks right and does nothing.
+#
+# The SDK default (PICO_MALLOC_PANIC 1) turns a failed allocation into
+# panic("Out of memory"), which defeats code written to handle NULL. FatFs's
+# directory creation is the case that matters: it asks for a buffer as large
+# as a cluster (32 KB on a large FAT32 card) and halves the request until it
+# fits, which it can only do if malloc is allowed to say no. Every allocation
+# in this firmware checks its result.
+if (NOT DEFINED ENV{PICO_MALLOC_PANIC})
+    set(ENV{PICO_MALLOC_PANIC} "0")
+endif()
+add_compile_definitions(PICO_MALLOC_PANIC=$ENV{PICO_MALLOC_PANIC})
+
+# The app's profile (include/profile.h): PROFILE_50FPS, the default, or
+# PROFILE_25FPS, from the environment (APP_PROFILE=PROFILE_25FPS ./build.sh).
+if (DEFINED ENV{APP_PROFILE})
+    add_compile_definitions(APP_PROFILE=$ENV{APP_PROFILE})
+endif()
+
 # Creates a pico-sdk subdirectory in our project for the libraries
 pico_sdk_init()
 
@@ -110,6 +132,7 @@ target_sources(${PROJECT_NAME} PRIVATE
         fb_font.c
         gconfig.c
         ikbd.c
+        ikbd_demux.c
         hw_config.c
         palette.c
         demo_menu.c
@@ -117,10 +140,16 @@ target_sources(${PROJECT_NAME} PRIVATE
         demo_3d.c
         demo_sprites.c
         demo_cojorotozoom.c
+        demo_input.c
+        demo_games.c
+        game_kit.c
+        game_arena.c
+        game_zap.c
         reset.c
         romemul.c
         sdcard.c
         select.c
+        st_session.c
         settings/settings.c)
 
 # Create map/bin/hex/uf2 files
@@ -210,6 +239,13 @@ if(${_DEBUG} STREQUAL "0")
     pico_enable_stdio_uart(${PROJECT_NAME} 0)
 else()
     pico_enable_stdio_uart(${PROJECT_NAME} 1)
+    # 921,600 baud, not the SDK's 115,200: DPRINTF blocks on the UART, and at
+    # 115,200 the boot trace delayed the cartridge image by about 0.3 s, so on
+    # a power-on the ST's TOS checked the cartridge before it was there and
+    # booted to GEM. The UART clock error at this rate is 0.02 %. Set the
+    # serial terminal (tools/dev/console.py) to 921600.
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PICO_DEFAULT_UART_BAUD_RATE=921600)
 endif()
 
 # Print the variables on screen
@@ -222,6 +258,10 @@ message("DEBUG_MODE: " ${_DEBUG})
 add_definitions(-DRELEASE_TYPE="${RELEASE_TYPE}")
 add_definitions(-DRELEASE_VERSION="${RELEASE_VERSION}")
 add_definitions(-DRELEASE_DATE="${RELEASE_DATE}")
+# The SDK's binary info carries a build date (picotool info shows it). It is
+# __DATE__ by default, the day of the compile, so two builds of one commit
+# made on different days differed; it is RELEASE_DATE instead.
+add_definitions(-DPICO_PROGRAM_BUILD_DATE="${RELEASE_DATE}")
 
 # Pass the APP_UUID_KEY to the C compiler
 if(DEFINED ENV{APP_UUID_KEY} AND NOT "$ENV{APP_UUID_KEY}" STREQUAL "")
@@ -241,12 +281,50 @@ add_definitions(-DDISPLAY_ATARIST)
 # We don't modify the flash in Core 1
 add_definitions(-DPICO_FLASH_ASSUME_CORE0_SAFE=1)
 
+# PICO_HEAP_SIZE is the heap the link guarantees: a build whose static data
+# leaves less fails with "region RAM overflowed" instead of booting with a heap
+# too small for the settings store and FatFs. Measured on the device: the boot
+# grows the heap to 13.2 KB (newlib's malloc grows it in 4 KB steps), and with
+# 9 KB the first settings allocation failed and the app jumped to Booster.
+target_compile_definitions(${PROJECT_NAME} PRIVATE PICO_HEAP_SIZE=0x8000)
 
-# Remove unused data
-target_link_options(${PROJECT_NAME} PRIVATE
-   "-Wl,--gc-sections"
-   "-Wl,--strip-all"
-)
+# Core 0's stack takes all of SCRATCH_Y (4 KB) instead of the SDK's 2 KB, and
+# a guard at its bottom turns an overflow into a HardFault instead of a silent
+# walk through SCRATCH_X into core 1's stack. Core 1's stack follows
+# PICO_STACK_SIZE too: all of SCRATCH_X, with its own guard. The deepest static
+# path from main, the boot's SD error trace, is 1,576 bytes (2,192 while the
+# FATFS object sat in emul_start's frame), plus newlib's printf, which the
+# analysis cannot see; core 1's jobs use well under 200 bytes.
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    PICO_STACK_SIZE=0x1000
+    PICO_USE_STACK_GUARDS=1)
+
+
+# Remove unused data. The ELF keeps its symbol table: it never reaches the
+# .uf2 (byte-identical either way), and the SWD tools find the cartridge
+# window, the build ID and the counters by symbol.
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--gc-sections")
+
+# build_id.h and build_id.c (RELEASE_BUILD_ID and the release_build_id symbol,
+# the git commit) are regenerated on every build; see build_id.cmake. They are
+# rewritten only when the ID changes, so only their users recompile. The symbol
+# is kept through --gc-sections so the SWD tools can read it from flash. A
+# debug build's ID ends in +debug, a build of another CMake type than
+# Release carries that type and a 25 fps build (APP_PROFILE) +25fps, so builds
+# of one tree cannot be taken for each other on the device.
+set(BUILD_ID_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/build_id)
+add_custom_target(build_id
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_LIST_DIR}
+            -DOUT_DIR=${BUILD_ID_DIR} -DDEBUG_BUILD=${_DEBUG}
+            -DCMAKE_TYPE=${CMAKE_BUILD_TYPE} -DAPP_PROFILE=$ENV{APP_PROFILE}
+            -P ${CMAKE_CURRENT_LIST_DIR}/build_id.cmake
+    BYPRODUCTS ${BUILD_ID_DIR}/build_id.h ${BUILD_ID_DIR}/build_id.c
+    COMMENT "Checking the build ID")
+add_dependencies(${PROJECT_NAME} build_id)
+target_sources(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR}/build_id.c)
+set_source_files_properties(${BUILD_ID_DIR}/build_id.c PROPERTIES GENERATED TRUE)
+target_include_directories(${PROJECT_NAME} PRIVATE ${BUILD_ID_DIR})
+target_link_options(${PROJECT_NAME} PRIVATE "-Wl,--undefined=release_build_id")
 
 # Enable clang-tidy (you need to have clang-tidy installed on your system)
 find_program(CLANG_TIDY_EXE NAMES clang-tidy)

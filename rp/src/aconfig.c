@@ -1,6 +1,10 @@
 #include "include/aconfig.h"
 
 // We don't have any variables because this is the placeholder app
+// Never remove an entry from this table, and add new ones only at the end. The
+// loader reads only as many stored entries as there are defaults, so one
+// default fewer silently drops the last setting a user saved. To retire a
+// setting, leave its entry here and stop reading it.
 static SettingsConfigEntry defaultEntries[] = {
     {ACONFIG_PARAM_FOLDER, SETTINGS_TYPE_STRING, "/test"},
     {ACONFIG_PARAM_MODE, SETTINGS_TYPE_INT, "255"},  // 255: Menu mode

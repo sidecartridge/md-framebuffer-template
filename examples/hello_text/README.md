@@ -14,7 +14,7 @@ demos stripped out, so it shows the minimal shape: clear → draw → animate
   boot sequence, then a tiny render loop. Everything above the
   `--- app state ---` marker is unchanged from the template; below it is
   the whole app.
-- **`CMakeLists.txt`** — a copy of `rp/src/CMakeLists.txt` with the five
+- **`CMakeLists.txt`** — a copy of `rp/src/CMakeLists.txt` with the six
   `demo_*.c` sources and the `hardware_interp` link removed.
 - **`apply.sh`** — backs up `rp/` to `rp.bak`, then customizes `rp/` to
   build this example.
@@ -49,7 +49,7 @@ You should see "HELLO ATARI ST" bouncing around the screen at 50 Hz.
    cp examples/hello_text/CMakeLists.txt rp/src/CMakeLists.txt
    cp examples/hello_text/emul.c         rp/src/emul.c
    ```
-   (Or just remove the five `demo_*.c` lines from `rp/src/CMakeLists.txt`.)
+   (Or just remove the seven `demo_*.c` lines from `rp/src/CMakeLists.txt`.)
 3. `./build.sh pico_w release <uuid>`.
 </details>
 

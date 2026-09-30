@@ -23,11 +23,15 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
   framework does the chunked → Atari ST planar conversion for you.
 - **~1 ms per VBL** for that chunky→planar conversion (split across both
   cores), so it barely eats into your frame budget.
-- **~6 kHz, 6-bit sampled sound** out the YM2149.
-- **Atari ST keyboard handled on the RP2040** — decoded scancodes
-  delivered straight to your app.
+- **Sampled sound**: 8-bit at 12.5 kHz through the DMA sound chip on an
+  STE or a Mega STE, ~6 kHz 6-bit out the YM2149 elsewhere — the same
+  asset plays on both. Or trade frames for sound: the **25 fps profile**
+  plays 25 kHz and ~22 kHz (see "Two profiles" in §5).
+- **Atari ST keyboard, mouse and joysticks handled on the RP2040** —
+  decoded scancodes, mouse movement and stick states delivered straight to
+  your app.
 
-> This repo ships with a 4-demo showcase + an animated menu.
+> This repo ships with a 4-demo showcase, an input test and an animated menu.
 > This guide is about **starting your own app**: what to remove, the API
 > you keep, and a minimal example. For the build toolchain and flashing,
 > see the official docs:
@@ -39,7 +43,7 @@ at 50 Hz.** No m68k assembly, no bus timing, no double-buffering to manage.
 
 ```bash
 # ./build.sh <board> <build_type> <app_uuid>
-#   board:      pico | pico_w | sidecartos_16mb
+#   board:      pico_w
 #   build_type: debug | release
 #   app_uuid:   UUID4 identifying your app (must match desc/app.json)
 ./build.sh pico_w release 44444444-4444-4444-8444-444444444444
@@ -73,12 +77,15 @@ released to run the app normally.
 
 ## 2. Starting fresh — strip the demos
 
-The template includes a boot menu and four demos as worked examples.
-For your own app, remove them and wire your code into the main loop.
+The template includes a boot menu with four demos, an input test and two
+small games as worked examples. For your own app, remove the menu and wire
+your code into the main loop.
 
 **The quick way:** `examples/hello_text/apply.sh` does all of this for you
 — it backs up `rp/` to `rp.bak`, deletes the demo/menu files below, and
-drops in a minimal `emul.c` + `CMakeLists.txt`. Run it, then build:
+drops in a minimal `emul.c` + `CMakeLists.txt`. (For a game,
+`examples/mini_game/apply.sh` does the same and boots into one of the
+games: see "Starting a game" below.) Run it, then build:
 
 ```bash
 examples/hello_text/apply.sh
@@ -97,18 +104,19 @@ rp/src/demo_parallax.c        rp/src/include/sidecart_logo.h
 rp/src/demo_3d.c              rp/src/include/sidecart_text.h
 rp/src/demo_sprites.c         rp/src/include/solid3d.h
 rp/src/demo_cojorotozoom.c    rp/src/include/sprites_data.h
-                              rp/src/include/cojo_texture.h
-                              rp/src/include/cojo_font.h
+rp/src/demo_input.c           rp/src/include/cojo_texture.h
+rp/src/demo_games.c           rp/src/include/cojo_font.h
                               rp/src/include/diego_sprite.h
                               rp/src/include/uridium_surface.h
 ```
 
-Keep `tools/png_to_texture.py` and `tools/wav_to_ym4.py` — they convert
-your *own* image/audio assets into headers.
+Keep `tools/png_to_bitmap.py`, `tools/png_to_texture.py` and
+`tools/wav_to_ym4.py` — they convert your *own* images and sounds into
+headers. The games (`rp/src/game_*.c`) can stay or go.
 
 ### Files to **change**
 
-- **`rp/src/CMakeLists.txt`** — remove the five `demo_*.c` entries from
+- **`rp/src/CMakeLists.txt`** — remove the seven `demo_*.c` entries from
   `target_sources(...)`. (You can also drop `hardware_interp` from
   `target_link_libraries` unless you use the SIO interpolator.)
 - **`rp/src/emul.c`** — the main loop currently drives the demo
@@ -126,7 +134,7 @@ your *own* image/audio assets into headers.
 | `fb_font.c/.h` + `font8x8.h` | text |
 | `palette.c/.h` | the 16-colour palette |
 | `audio.c/.h` | YM audio (loop a buffer or stream via callback) |
-| `ikbd.c/.h` | keyboard events |
+| `ikbd.c/.h` | keyboard events, the mouse and the joysticks (input modes) |
 
 Everything else (`main.c`, `commemul`, `romemul`, `ikbd`, `sdcard`,
 `select`, `reset`, `gconfig`/`aconfig`, `cart_shared.h`, `constants.h`,
@@ -200,10 +208,19 @@ its colour-cycling.
 ```c
 void fb_publish(void);            // call once per frame, after drawing
 uint32_t fb_last_convert_us(void);// c2p cost of the last publish (debug)
+void fb_set_copy_mode(uint8_t mode, uint8_t piece); // who copies on the ST
 ```
 
 `fb_publish()` blocks until the ST has finished blitting the previous
 frame, so calling it once per loop naturally paces your app to 50 Hz.
+
+On the ST the 68000 copies each frame to the screen, or, on an STE or a
+Mega STE, the blitter, which gives the ST about 1.4 ms of every frame
+back. Where the YM plays the sound (a plain ST, a Mega ST fitted with a
+blitter) the 68000 copies: the blitter holds the CPU off, Timer-B's samples
+come late and the sound gets rough. `fb_set_copy_mode(CART_BLIT_MODE_BLITTER, 0)`
+takes the blitter anyway, for an app without sound (about 3 ms more on a
+Mega ST); `CART_BLIT_MODE_CPU` keeps the 68000.
 
 ---
 
@@ -296,12 +313,37 @@ your own graphics.
 > Tip: keep `fb_pump_rom3()` + `ikbd_pump()` at the top of the loop and
 > `audio_render_frame()` at the bottom — those keep input and audio alive.
 
+### Starting a game
+
+**`examples/mini_game/`** boots straight into one of the two games that
+come with the template, which are also entries 6 and 7 of the demo menu:
+`rp/src/game_arena.c` (the joystick: grab gems, shoot enemies) and
+`rp/src/game_zap.c` (the mouse: the left button zaps, the right one takes).
+They show what a game needs beyond the section above:
+
+- an input mode, keys held down (the IKBD sends no repeats), and the
+  joystick's and the mouse's press latches;
+- sprites drawn again only where they moved, over a tiled arena
+  (`game_kit.c`);
+- sprites and tiles drawn as indexed PNGs and converted by
+  `tools/png_to_bitmap.py` into `FB_BITMAP`s and a palette;
+- a tune and sound effects computed as they play, through
+  `audio_set_pcm_callback()`.
+
+`examples/mini_game/README.md` walks through them.
+
 ---
 
 ## 5. Audio (`audio.h`)
 
-The firmware streams a 1 KB cart buffer to the YM2149 every VBL. You
-supply the bytes one of two ways.
+On an STE or a Mega STE the sound goes through the DMA sound chip (8-bit,
+12,517 Hz, no interrupt per sample); on a plain ST or Mega ST it goes
+through the YM2149 (~6-bit, 5,585 Hz). Those are the 50 fps profile's
+rates; the 25 fps profile doubles and quadruples them (below). The template picks the output at
+every ST boot, and the RP writes the samples ahead of what the ST plays
+from a timer interrupt, so the sound never tears and never repeats,
+whatever your frame rate. Your audio is YM volume pairs or 8-bit PCM, and
+either plays on both outputs: the RP converts at runtime.
 
 ### Loop a baked-in buffer
 
@@ -314,11 +356,28 @@ audio_play_loop(audio_sample_data, sizeof(audio_sample_data));
 // ... then call audio_render_frame() once per main-loop iteration.
 ```
 
+### 8-bit PCM
+
+For a recording at its best on the DMA chip, convert it to signed 8-bit
+PCM at 12,517 Hz (`tools/wav_to_ym4.py --mode pcm --target-rate 12517
+--header-output my_sound.h my_sound.wav`), or generate PCM live at any
+rate; on the YM the RP plays its upper 6 bits through the same table:
+
+```c
+#include "my_sound.h"       // audio_sample_data[], AUDIO_SAMPLE_RATE_HZ
+audio_play_pcm_loop(audio_sample_data, audio_sample_count, AUDIO_SAMPLE_RATE_HZ);
+
+static void my_pcm(int8_t *buf, uint32_t samples) { /* ... */ }
+audio_set_pcm_callback(my_pcm, AUDIO_DMA_RATE_HZ);
+```
+
+`audio_prefer_ym(true)` keeps an STE on the YM from its next boot;
+`audio_uses_dma()` says which output plays.
+
 ### Generate audio live (callback)
 
-For dynamic sound, install a fill callback. The library calls it once per
-VBL with the exact byte count the m68k will consume (224 = 112 stereo
-samples at ~5,585 Hz):
+For dynamic sound in YM pairs, install a fill callback. The library asks it
+for pairs at 5,585 Hz, whatever the output's rate (it resamples them):
 
 ```c
 static void my_fill(uint8_t *buf, uint32_t bytes) {
@@ -327,13 +386,108 @@ static void my_fill(uint8_t *buf, uint32_t bytes) {
 audio_set_fill_callback(my_fill);   // pass NULL for silence
 ```
 
-Either way, **`audio_render_frame()` must be called each loop iteration**
-(it self-paces to ~50 Hz). There's also `audio_play_yms_file(path)` to
-stream a `.YMS` file from SD — see §6.
+Either way, **`audio_render_frame()` must be called each loop iteration**:
+it tops up a small FIFO (4 VBLs of samples, 3 on the YM at 25 fps) that the interrupt plays from.
+Your loop may take up to 80 ms between two calls without the sound
+noticing; a sample reaches the speaker at most 120 ms after your callback
+made it on the YM, about 175 ms on the DMA chip. There's also `audio_play_yms_file(path)` to stream a `.YMS` file
+from SD — see §7.
+
+### Two profiles: 50 fps, or 25 fps with rich sound
+
+The ST's time goes to two things: copying your frame to its screen (17.6 ms
+for a full screen) and, on a plain ST or Mega ST, playing the sound
+sample by sample through Timer-B (about 19 µs a sample). You choose the
+trade at compile time with `APP_PROFILE` (`rp/src/include/profile.h`):
+
+| | `PROFILE_50FPS` (default) | `PROFILE_25FPS` |
+|---|---|---|
+| Frames | every VBL: 50 fps | every second VBL: 25 fps, on every machine |
+| YM (plain ST, Mega ST) | 5,585 Hz | 21,943 Hz |
+| DMA chip (STE, Mega STE) | 12,517 Hz | 25,033 Hz |
+| Good for | arcade games, full-screen effects | story games, laserdisc-style |
+
+```bash
+APP_PROFILE=PROFILE_25FPS ./build.sh pico_w release 44444444-4444-4444-8444-444444444444
+```
+
+The same ST code serves both: the RP tells the ST the profile at boot.
+`fb_publish()` then paces your loop at the profile's frame rate. Measured on
+a Mega ST at 25 fps, the full copy and 22 kHz sound leave about 5.5 ms of
+each 40 ms frame free, and a mouse moved flat out costs no frame. Your
+sources keep their rates: `AUDIO_DMA_RATE_HZ` follows the profile, and YM
+pairs and PCM at other rates are resampled. If your game steps its state
+once a frame, it moves half as fast at 25 fps: scale by
+`PROFILE_VBLS_A_FRAME`, or count time (`time_us_32()`).
 
 ---
 
-## 6. SD card (`sdcard.h` + FatFs)
+## 6. Keyboard, mouse and joysticks (`ikbd.h`)
+
+The ST forwards every byte its keyboard processor (the IKBD) sends, and the
+RP decodes them: keys arrive as events, the mouse and the joysticks as state
+you read once a frame.
+
+### Pick an input mode
+
+Port 0 takes the mouse or joystick 0, never both, so the app picks what the
+IKBD reports. The keyboard works in every mode.
+
+| Mode | Port 0 | Port 1 |
+| --- | --- | --- |
+| `IKBD_INPUT_KEYBOARD` (the default) | — | — |
+| `IKBD_INPUT_MOUSE` | mouse | — |
+| `IKBD_INPUT_MOUSE_JOY1` | mouse | joystick |
+| `IKBD_INPUT_JOYSTICKS` | joystick | joystick |
+
+`ikbd_set_input_mode()` takes a few VBLs: `ikbd_get_live_input_mode()` says
+when the ST has sent the IKBD its commands. The mode survives an ST reset
+and a keyboard plugged back in; keys held when the keyboard went away are
+released.
+
+```c
+ikbd_set_input_mode(IKBD_INPUT_MOUSE_JOY1);   // once
+
+// once per frame:
+ikbd_mouse_t m;
+ikbd_read_mouse(&m);                  // movement since the last read
+px += m.dx; py += m.dy;
+if (m.pressed & IKBD_MOUSE_LEFT) { /* clicked, even between two reads */ }
+
+ikbd_joystick_t j;
+ikbd_read_joystick(1, &j);            // port 1
+if (j.state & IKBD_JOY_LEFT) ship_x--;
+if (j.pressed & IKBD_JOY_FIRE) { /* fire pressed since the last read */ }
+```
+
+What the hardware decides:
+
+- Stick 0's fire is the left mouse button and stick 1's fire the right one:
+  the same wires. In `IKBD_INPUT_MOUSE_JOY1` the IKBD reports stick 1's
+  fire only as the right button; `ikbd_read_joystick(1)` shows it as fire.
+- A mouse left in port 0 in joystick mode moves stick 0.
+- The IKBD has no auto-repeat: one press and one release per key.
+- `ikbd_send_commands()` sends other IKBD commands, once the mode is live.
+
+Menu entry 5 (the input test) shows all of it live, with the counters.
+
+### What it costs the ST
+
+Every IKBD byte is an interrupt on the ST, 30-40 µs. The full-screen blit
+and the audio leave the ST about 0.27 ms of each VBL, so while the mouse
+moves fast (up to 9 bytes a VBL: the mouse modes set a threshold of 4 counts
+per packet) some blits end after the next VBL and that frame waits one: on a
+Mega ST, 50 frames a second at rest, 30-40 while the mouse moves flat out.
+The sound stays clean. On an STE or a Mega STE the DMA chip plays the sound
+and the blitter copies the frame, and the mouse costs no frames; nor does
+it in the 25 fps profile (§5). The ST's stopwatch (`TIME_STUDY` in
+`userfw.s`, `tools/dev/swd.py stopwatch`) measures the slack your app
+leaves (`tools/dev/README.md`); blitting fewer lines (`FB_COPY_LINES`,
+about 88 µs per line) buys more.
+
+---
+
+## 7. SD card (`sdcard.h` + FatFs)
 
 The cartridge has a microSD slot, and **the template already mounts it for
 you at boot** — so reading and writing files is just standard
@@ -383,7 +537,7 @@ and `sdcard_getMountedInfo(&total_mb, &free_mb)`.
 
 ---
 
-## 7. Per-app config (`aconfig`)
+## 8. Per-app config (`aconfig`)
 
 Each app gets a small key-value store in flash, **editable from the
 Booster app without recompiling** — handy for things like a working
@@ -420,7 +574,7 @@ settings_save(aconfig_getContext(), true);   // true = disable IRQs during the f
 
 ---
 
-## 8. The main loop, in one picture
+## 9. The main loop, in one picture
 
 ```
 emul_start():
@@ -431,8 +585,9 @@ emul_start():
 
     while (true):
         fb_pump_rom3();          // ROM3 ring -> IKBD + VBL frame-sync
-        ikbd_pump();             // decode key events
+        ikbd_pump();             // decode keys, mouse, joysticks
         while ikbd_pop_key(&k):  <handle key>
+        ikbd_read_mouse(&m);     <move things>   (in a mouse mode)
         <draw your frame into fb_chunked_buffer>
         fb_publish();            // tear-free 50 Hz hand-off to the ST
         audio_render_frame();    // refill the YM buffer
@@ -449,6 +604,21 @@ optimization toolbox: per-file `#pragma GCC optimize("O3")`,
 `__not_in_flash_func()` on hot
 loops, fixed-point + sin/cos LUTs, the SIO interpolator for texture
 addressing, and a dual-core band split via `fb_core1_dispatch()`.
+
+## Testing and debugging
+
+- **Host tests**: `make -C tests/host test` runs the template's pure logic on your computer in a
+  second or two: the blits' clipping, the framebuffer layout end to end (what you draw is what
+  the ST shows), the ST and RP copies of every shared constant, the audio converter and slices,
+  and the IKBD decoder against a simulated keyboard losing bytes. CI runs
+  them on every pull request. Add yours as `tests/host/test_*.c` (its first line names the
+  firmware sources it compiles) or `test_*.py`.
+- **A constant both sides share** (a new block in the cartridge window, a new ROM3 signal) goes
+  in `target/atarist/src/inc/sidecart_layout.s` and `rp/src/include/cart_shared.h`, with a row in
+  `tests/host/test_layout.py`.
+- **With a Raspberry Pi Debug Probe** on the RP's SWD and debug UART, `tools/dev/` builds, flashes
+  and verifies from the host, captures the console, reads counters while the app runs, grabs the
+  screen as a PNG and types on the ST's keyboard: see `tools/dev/README.md`.
 
 ## More docs
 

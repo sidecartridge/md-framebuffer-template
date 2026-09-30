@@ -47,10 +47,10 @@ static spi_t spis[] = {  // One for each SPI.
         .miso_gpio = 4,   // GPIO number (not pin number)
         .mosi_gpio = 3,
         .sck_gpio = 2,
-        .spi_mode = 3,               // SPI Mode 3
+        .spi_mode = SD_SPI_MODE,
         .set_drive_strength = true,  // Set drive strength for GPIOs
-        .mosi_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA,
-        .sck_gpio_drive_strength = GPIO_DRIVE_STRENGTH_2MA,
+        .mosi_gpio_drive_strength = SD_SPI_GPIO_DRIVE_STRENGTH,
+        .sck_gpio_drive_strength = SD_SPI_GPIO_DRIVE_STRENGTH,
 
     }};
 
@@ -76,7 +76,7 @@ static sd_card_t sd_cards[] = {  // One for each SD card
 /* ********************************************************************** */
 size_t sd_get_num() { return count_of(sd_cards); }
 sd_card_t *sd_get_by_num(size_t num) {
-  if (num <= sd_get_num()) {
+  if (num < sd_get_num()) {
     return &sd_cards[num];
   } else {
     return NULL;
@@ -84,7 +84,7 @@ sd_card_t *sd_get_by_num(size_t num) {
 }
 size_t spi_get_num() { return count_of(spis); }
 spi_t *spi_get_by_num(size_t num) {
-  if (num <= sd_get_num()) {
+  if (num < spi_get_num()) {
     return &spis[num];
   } else {
     return NULL;
