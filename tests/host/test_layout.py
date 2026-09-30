@@ -137,6 +137,15 @@ PAIRS = [
     # The shared-variable slots and the palette inside them.
     ("shared variables", lambda st: window(st, "SHARED_VARIABLES"),
      lambda rp: rp["CART_SHARED_VARIABLES_OFFSET"]),
+    ("IKBD command block", lambda st: window(st, "IKBD_OUT_ADDR"),
+     lambda rp: rp["CART_IKBD_OUT_OFFSET"]),
+    ("IKBD command block size", lambda st: st["IKBD_OUT_SIZE"],
+     lambda rp: rp["CART_IKBD_OUT_SIZE"]),
+    ("IKBD command bytes", lambda st: st["IKBD_OUT_MAX"], lambda rp: rp["CART_IKBD_OUT_MAX"]),
+    ("IKBD command bytes' offset", lambda st: window(st, "IKBD_OUT_BYTES"),
+     lambda rp: rp["CART_IKBD_OUT_OFFSET"] + 4),
+    ("IKBD command busy bit", lambda st: 1 << st["IKBD_OUT_BUSY_BIT"],
+     lambda rp: rp["CART_IKBD_OUT_BUSY"]),
     ("palette", lambda st: window(st, "PALETTE_ADDR"), lambda rp: rp["CART_PALETTE_OFFSET"]),
     ("palette size", lambda st: st["PALETTE_SIZE"], lambda rp: rp["CART_PALETTE_SIZE"]),
     # The audio buffer.
@@ -179,6 +188,10 @@ PAIRS = [
      lambda rp: rp["CART_ROM3_AUDIO_SLICE_WINDOW"]),
     ("ACIA overrun window", lambda st: rom3(st, "IKBD_OVERRUN_ADDR"),
      lambda rp: rp["CART_ROM3_IKBD_OVERRUN_WINDOW"]),
+    ("IKBD byte count window", lambda st: rom3(st, "IKBD_COUNT_WINDOW"),
+     lambda rp: rp["CART_ROM3_IKBD_COUNT_WINDOW"]),
+    ("IKBD commands sent window", lambda st: rom3(st, "IKBD_OUT_WINDOW"),
+     lambda rp: rp["CART_ROM3_IKBD_OUT_WINDOW"]),
     ("hello window", lambda st: rom3(st, "ST_HELLO_WINDOW"),
      lambda rp: rp["CART_ROM3_HELLO_WINDOW"]),
     ("TOS high byte window", lambda st: rom3(st, "ST_TOS_HI_WINDOW"),
@@ -225,6 +238,30 @@ class Layout(unittest.TestCase):
         self.assertEqual(1 << st["AUDIO_SLICE_SHIFT"], st["AUDIO_SLICE_BYTES"])
         slices = rp["CART_AUDIO_SLICES"]
         self.assertEqual(slices & (slices - 1), 0, "the ST masks the slice number")
+
+    def test_rom3_windows_distinct(self):
+        """Every ROM3 signalling window has a high byte of its own."""
+        rp = rp_names()
+        windows = {n: v for n, v in rp.items()
+                   if n.startswith("CART_ROM3_") and n.endswith("_WINDOW")}
+        windows["IKBD_WINDOW_LO16"] = rp["IKBD_WINDOW_LO16"]
+        by_value = {}
+        for name, value in windows.items():
+            by_value.setdefault(value & rp["CART_ROM3_WINDOW_MASK"], []).append(name)
+        for value, names in by_value.items():
+            with self.subTest(f"${value:04X}"):
+                self.assertEqual(len(names), 1, names)
+
+    def test_ikbd_command_slots(self):
+        """The IKBD command block is shared-variable slots, not the palette's."""
+        rp = rp_names()
+        offset, size = rp["CART_IKBD_OUT_OFFSET"], rp["CART_IKBD_OUT_SIZE"]
+        start = rp["CART_SHARED_VARIABLES_OFFSET"]
+        self.assertEqual((offset - start) % 4, 0)
+        self.assertGreaterEqual(offset, start)
+        self.assertLessEqual(offset + size, start + rp["CART_SHARED_VARIABLES_SLOTS"] * 4)
+        palette = rp["CART_PALETTE_OFFSET"]
+        self.assertTrue(offset + size <= palette or offset >= palette + rp["CART_PALETTE_SIZE"])
 
     def test_window_blocks_in_order(self):
         """The blocks do not overlap, and the framebuffer ends the window."""

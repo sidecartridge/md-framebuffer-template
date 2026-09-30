@@ -14,10 +14,10 @@
 // stores the outcome in result and copies seq to ack.
 //
 //   DEVHOOKS_KIND_KEY  IKBD bytes, one per payload word (low byte), fed in
-//                      where the ST's own arrive (ikbd_consume_rom3_sample),
-//                      so the demux, the ESC handling and the app see a real
-//                      keyboard: a key press is its scancode, a release the
-//                      scancode | 0x80. result is the number of bytes fed.
+//                      with the ST's own (ikbd_inject_byte), so the demux,
+//                      the ESC handling and the app see a real keyboard: a
+//                      key press is its scancode, a release the scancode |
+//                      0x80. result is the number of bytes fed.
 //   DEVHOOKS_KIND_APP  App-defined command: command_id and payload go to the
 //                      handler set with devhooks_setAppHandler(). result is
 //                      the handler's return value, 0 when no handler is set.
@@ -77,8 +77,7 @@ __attribute__((weak, noinline)) void devhooks_poll(void) {
   uint32_t result = 0;
   if (m->kind == DEVHOOKS_KIND_KEY) {
     for (uint16_t i = 0; i < size / 2u; i++) {
-      ikbd_consume_rom3_sample(
-          (uint16_t)(IKBD_WINDOW_LO16 | (m->payload[i] & 0xFFu)));
+      ikbd_inject_byte((uint8_t)(m->payload[i] & 0xFFu));
       result++;
     }
   } else if (m->kind == DEVHOOKS_KIND_APP && devhooksAppHandler != NULL) {
