@@ -46,7 +46,9 @@ double-buffering. `fb_publish()` blocks on the ST's VBL, so one call per
 loop paces the app to 50 Hz.
 
 `README.md` is the human guide; `CLAUDE.md` is the architecture
-deep-dive; `examples/hello_text/` is a minimal working app.
+deep-dive; `examples/hello_text/` is a minimal working app and
+`examples/mini_game/` a game (`rp/src/game_arena.c` for the joystick,
+`rp/src/game_zap.c` for the mouse, on `game_kit.c`).
 
 ## Starting a fresh app
 
@@ -54,7 +56,7 @@ deep-dive; `examples/hello_text/` is a minimal working app.
 backs up `rp/` to `rp.bak`, deletes the demo/menu files, and installs a
 minimal `emul.c` + `CMakeLists.txt`. The manual steps:
 
-1. **Delete the demos**: `rp/src/demo_*.c` (5 files), `rp/src/include/demo.h`,
+1. **Delete the demos**: `rp/src/demo_*.c` (7 files), `rp/src/include/demo.h`,
    and the asset headers (`sidecart_logo.h`, `sidecart_text.h`,
    `solid3d.h`, `sprites_data.h`, `cojo_texture.h`, `cojo_font.h`,
    `diego_sprite.h`, `uridium_surface.h`).
@@ -68,7 +70,11 @@ minimal `emul.c` + `CMakeLists.txt`. The manual steps:
 4. **`desc/app.json`**: set your `uuid` (must match the UUID passed to
    `build.sh`).
 
-`examples/hello_text/emul.c` is a ready-made stripped `emul.c` to copy.
+`examples/hello_text/emul.c` is a ready-made stripped `emul.c` to copy;
+`examples/mini_game/emul.c` boots into a game instead. For a game's sprites
+and tiles, draw indexed PNGs (16 colours, one transparent) and convert them
+with `tools/png_to_bitmap.py` (`FB_BITMAP`s + the palette for
+`palette_set()`), as `rp/src/assets/convert.sh` does.
 
 ## The API (keep these modules; they are your API)
 

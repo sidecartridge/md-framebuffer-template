@@ -162,7 +162,10 @@ the difference. `app NAME [WORD]`
 runs the command defined as `DEVHOOKS_APP_<NAME>` in `rp/src/include`; the demo dispatcher
 (`demo.h`, `demo_dispatcher_devhook()`) has:
 
-- `demo N`: launch menu entry N (1-4 the demos, 5 the input test); `menu`: back to the menu.
+- `demo N`: launch menu entry N (1-4 the demos, 5 the input test, 6 Arena, 7 Zap); `menu`: back
+  to the menu. In debug builds Arena takes knobs as keys, for scripts: `key 0x4E` / `key 0x4A`
+  (keypad + / -) add or remove an enemy, `key s` doubles their size, `key f` freezes the game,
+  `key r` / `key a` redraw the arena once / every second.
 - `overlay 0|1`: the DRAW/C2P readout (the hidden `D` key).
 - `slow_frame MS`: every frame takes MS milliseconds longer (0 stops it): an app late with its
   frames, on demand. The sound and the publish handshake must survive it.

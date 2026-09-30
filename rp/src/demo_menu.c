@@ -18,6 +18,7 @@
 #include <stdint.h>
 
 #include "audio.h"
+#include "audio_sample.h"
 #include "cart_shared.h"
 #include "debug.h"
 #include "fb.h"
@@ -106,23 +107,22 @@ static demo_state_t s_state;
 static const demo_module_t *s_active;
 static int s_menu_sel; /* highlighted menu item (0..MENU_ITEM_COUNT-1) */
 
-#define MENU_ITEM_COUNT 5
+#define MENU_ITEM_COUNT 7
 static const demo_module_t *const s_menu[MENU_ITEM_COUNT] = {
     &demo_parallax,
     &demo_3d,
     &demo_sprites,
     &demo_cojorotozoom,
     &demo_input,
+    &demo_arena,
+    &demo_zap,
 };
 
 /* IKBD scancodes for the menu hotkeys. ESC = $01 is the back/exit
- * key; 1..5 = $02..$06 on the unshifted top row. */
+ * key; 1..7 = $02..$08 on the unshifted top row. */
 #define IKBD_SC_ESC 0x01u
 #define IKBD_SC_1   0x02u
-#define IKBD_SC_2   0x03u
-#define IKBD_SC_3   0x04u
-#define IKBD_SC_4   0x05u
-#define IKBD_SC_5   0x06u
+#define IKBD_SC_7   0x08u
 #define IKBD_SC_D   0x20u  /* hidden: toggle DRAW/C2P readout (menu + demos) */
 #define IKBD_SC_B   0x30u  /* B = return to Booster (menu only) */
 #define IKBD_SC_RET 0x1Cu  /* Return = launch the highlighted item */
@@ -256,8 +256,9 @@ static void __not_in_flash_func(render_menu)(void) {
     v2 += dvy2;
   }
 
-  /* Dark panel behind the menu list for legibility, then the text. */
-  fb_fill_rect(48, 64, 224, 104, 15);
+  /* Dark panel behind the menu list for legibility, centred on the
+   * screen, then the text. */
+  fb_fill_rect(48, 38, 224, 124, 15);
 
   font_set_font(&font8x8);
   font_set_color(0);
@@ -267,11 +268,12 @@ static void __not_in_flash_func(render_menu)(void) {
   font_print("S I D E C A R T R I D G E");
 
   static const char *const items[MENU_ITEM_COUNT] = {
-      "1.  Uridium scroll", "2.  3D Solid", "3.  Multi-sprite swarm",
-      "4.  Cojorotozoom", "5.  Input test"};
+      "1.  Uridium scroll", "2.  3D Solid",  "3.  Multi-sprite swarm",
+      "4.  Cojorotozoom",   "5.  Input test", "6.  Arena (joystick)",
+      "7.  Zap (mouse)"};
   font_align(FONT_ALIGN_LEFT);
   for (int i = 0; i < MENU_ITEM_COUNT; i++) {
-    int iy = 72 + i * 14;
+    int iy = 46 + i * 13;
     if (i == s_menu_sel) {
       fb_fill_rect(56, iy - 2, 208, 12, 14); /* amber highlight bar */
       font_set_color(15);                    /* dark text on the bar */
@@ -282,10 +284,10 @@ static void __not_in_flash_func(render_menu)(void) {
     font_print(items[i]);
   }
   font_set_color(0);
-  font_move(60, 144);
+  font_move(60, 140);
   font_print("UP/DN  RET=start  ESC=exit");
   font_align(FONT_ALIGN_CENTER);
-  font_move(FB_CHUNKED_W / 2, 155);
+  font_move(FB_CHUNKED_W / 2, 151);
   font_print("B=return to Booster");
 
   /* Hidden DRAW/C2P readout (toggled with 'D'), previous frame's numbers
@@ -329,9 +331,19 @@ static void return_to_booster(void) {
   st_session_return_to_booster();
 }
 
+void demo_menu_music(void) {
+  /* A .YMS file from the app folder first; on any failure (no SD, file
+   * missing, bad header, rate mismatch) the baked-in Ghostbusters G1
+   * jingle, so the menu always has sound. */
+  if (audio_play_yms_file("DEMO.YMS") < 0) {
+    audio_play_loop(audio_sample_data, (uint32_t)sizeof(audio_sample_data));
+  }
+}
+
 void demo_dispatcher_init(void) {
   s_state = DEMO_STATE_MENU;
   s_active = NULL;
+  demo_menu_music();
   /* Take ownership of the ESC key from ikbd.c -- the dispatcher
    * routes it to "back to menu" while a demo is active and uses it
    * to exit to GEM only from the menu. */
@@ -405,14 +417,10 @@ void demo_dispatcher_handle_key(const ikbd_key_event_t *k) {
       case IKBD_SC_RET:
         launch_demo((unsigned)s_menu_sel);
         break;
-      case IKBD_SC_1:
-      case IKBD_SC_2:
-      case IKBD_SC_3:
-      case IKBD_SC_4:
-      case IKBD_SC_5:
-        launch_demo((unsigned)(k->scancode - IKBD_SC_1));
-        break;
       default:
+        if (k->scancode >= IKBD_SC_1 && k->scancode <= IKBD_SC_7) {
+          launch_demo((unsigned)(k->scancode - IKBD_SC_1));
+        }
         break;
     }
     return;

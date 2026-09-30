@@ -49,7 +49,7 @@ You should see "HELLO ATARI ST" bouncing around the screen at 50 Hz.
    cp examples/hello_text/CMakeLists.txt rp/src/CMakeLists.txt
    cp examples/hello_text/emul.c         rp/src/emul.c
    ```
-   (Or just remove the six `demo_*.c` lines from `rp/src/CMakeLists.txt`.)
+   (Or just remove the seven `demo_*.c` lines from `rp/src/CMakeLists.txt`.)
 3. `./build.sh pico_w release <uuid>`.
 </details>
 
