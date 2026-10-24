@@ -31,6 +31,8 @@
 enum {
   ACONFIG_BUFFER_SIZE = 4096,
   ACONFIG_MAGIC_NUMBER = 0x1234,
+  // Settings stored with another version are ignored and the defaults load.
+  // make tag checks it against RELEASE_ACONFIG_VERSION in the Makefile.
   ACONFIG_VERSION_NUMBER = 0x0001
 };
 

@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.1 (unreleased)
+
+### Release
+
+- `make tag` checks the settings version first. It runs the new `make check-release`, which
+  stops with an error unless `ACONFIG_VERSION_NUMBER` in `rp/src/include/aconfig.h` equals
+  `RELEASE_ACONFIG_VERSION` in the `Makefile` (1), so a value used only while developing never
+  reaches a release. An app that raises the version, to start its stored settings again from
+  the defaults, raises both.
+- `CLAUDE.md` says where the release UUID lives: the `APP_UUID` secret of the GitHub repository,
+  used by CI on pull requests and on the tag, with the development UUID as the fallback and for
+  local builds.
+
 ## v1.1.0 (2026-09-30)
 
 ### Sound
