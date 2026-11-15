@@ -62,7 +62,7 @@ jobs:
       run: arm-none-eabi-gcc --version
 
     - name: Install AtariST Toolkit Docker image
-      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.5.0/install_atarist_toolkit_docker.sh | bash
 
     # Date the build by its commit, so this build and a local build of the
     # same commit with the same RELEASE_DATE are byte-identical.

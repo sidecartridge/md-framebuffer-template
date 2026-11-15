@@ -56,7 +56,7 @@ jobs:
           echo "PICO_TOOLCHAIN_PATH=$HOME/arm-gnu-toolchain/bin" >> "$GITHUB_ENV"
 
     - name: Install AtariST Toolkit Docker image
-      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.3.0/install_atarist_toolkit_docker.sh | bash
+      run: curl -sL https://github.com/sidecartridge/atarist-toolkit-docker/releases/download/v1.5.0/install_atarist_toolkit_docker.sh | bash
 
     - name: Date the build by its commit
       run: echo "RELEASE_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M:%S')" >> "$GITHUB_ENV"
